@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "kafka-clients-trait",
+    "kafka-clients-mock",
+    "connect-api",
+    "connect-transforms",
+    "connect-runtime-core",
+    "connect-runtime-distributed",
+    "connect-mirror-client",
+    "connect-mirror",
+    "connect-basic-auth-extension",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"

@@ -1,0 +1,12 @@
+[package]
+name = "kafka-clients-mock"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kafka-clients-trait = { path = "../kafka-clients-trait" }
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
