@@ -5,7 +5,7 @@
 /// ReplicationPolicy - 主题名称复制策略
 ///
 /// 定义如何复制和转换主题名称的策略接口
-pub trait ReplicationPolicy {
+pub trait ReplicationPolicy: Send + Sync {
     /// 格式化远程主题名称
     ///
     /// # 参数

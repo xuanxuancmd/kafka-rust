@@ -6,6 +6,8 @@ pub mod transformation;
 pub mod predicate;
 pub mod simple;
 pub mod complex;
+pub mod regex_router;
+pub mod set_schema_metadata;
 
 pub use transformation::Transformation;
 pub use predicate::Predicate;

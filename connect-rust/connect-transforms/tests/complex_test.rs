@@ -1,7 +1,7 @@
 //! Unit Unit tests for complex transformations
 
-use connect_api::connector::{Closeable, Configurable};
-use connect_api::{ConnectRecord, Transformation};
+use connect_api::data::ConcreteHeaders;
+use connect_api::{Closeable, Configurable, ConnectRecord, Transformation};
 use connect_transforms::complex::{
     Cast, ExtractField, Flatten, HeaderFrom, HoistField, InsertField, MaskField, ReplaceField,
     TimestampConverter,
@@ -46,10 +46,9 @@ impl ConnectRecord<MockRecord> for MockRecord {
     }
 
     fn headers(&self) -> &dyn connect_api::Headers {
-        use std::sync::LazyLock;
-        static EMPTY_HEADERS: LazyLock<connect_api::ConcreteHeaders> =
-            LazyLock::new(|| connect_api::ConcreteHeaders::new());
-        &*EMPTY_HEADERS
+        use std::sync::OnceLock;
+        static EMPTY_HEADERS: OnceLock<ConcreteHeaders> = OnceLock::new();
+        EMPTY_HEADERS.get_or_init(|| ConcreteHeaders::new())
     }
 }
 

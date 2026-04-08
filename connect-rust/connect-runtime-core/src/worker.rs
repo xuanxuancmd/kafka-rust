@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use connect_api::{
-    connector::Converter, Connector, SinkConnector, SinkTask, SourceConnector, SourceTask,
+    connector_impl::Converter, Connector, SinkConnector, SinkTask, SourceConnector, SourceTask,
 };
 
 use crate::{ConnectRuntimeError, ConnectRuntimeResult, WorkerConnectorConfig, WorkerWorkerConfig};

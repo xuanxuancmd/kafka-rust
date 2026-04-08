@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use connect_api::connector::TopicPartition;
+use connect_api::TopicPartition;
 
 use crate::ConnectRuntimeError;
 

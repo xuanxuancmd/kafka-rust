@@ -1,7 +1,7 @@
 //! Unit tests for simple transformations
 
-use connect_api::connector::{Closeable, Configurable};
-use connect_api::{ConnectRecord, Transformation};
+use connect_api::data::ConcreteHeaders;
+use connect_api::{Closeable, Configurable, ConnectRecord, Transformation};
 use connect_transforms::simple::{DropHeaders, Filter, InsertHeader, TimestampRouter, ValueToKey};
 use std::any::Any;
 use std::collections::HashMap;
@@ -43,10 +43,9 @@ impl ConnectRecord<MockRecord> for MockRecord {
     }
 
     fn headers(&self) -> &dyn connect_api::Headers {
-        use std::sync::LazyLock;
-        static EMPTY_HEADERS: LazyLock<connect_api::ConcreteHeaders> =
-            LazyLock::new(|| connect_api::ConcreteHeaders::new());
-        &*EMPTY_HEADERS
+        use std::sync::OnceLock;
+        static EMPTY_HEADERS: OnceLock<ConcreteHeaders> = OnceLock::new();
+        EMPTY_HEADERS.get_or_init(|| ConcreteHeaders::new())
     }
 }
 

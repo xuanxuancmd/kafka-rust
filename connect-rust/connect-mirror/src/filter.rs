@@ -5,7 +5,7 @@
 /// Topic filter
 ///
 /// Determines which topics should be replicated.
-pub trait TopicFilter {
+pub trait TopicFilter: Send + Sync {
     /// Check if a topic should be replicated
     fn should_replicate_topic(&self, topic: String) -> bool;
 }
@@ -13,7 +13,7 @@ pub trait TopicFilter {
 /// Group filter
 ///
 /// Determines which consumer groups should be replicated.
-pub trait GroupFilter {
+pub trait GroupFilter: Send + Sync {
     /// Check if a consumer group should be replicated
     fn should_replicate_group(&self, group: String) -> bool;
 }

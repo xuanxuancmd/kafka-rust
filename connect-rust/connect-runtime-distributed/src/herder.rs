@@ -421,13 +421,24 @@ impl DistributedHerderImpl {
         self.protocol_compatibility = protocol;
     }
 
-    /// Update metrics
-    fn update_metrics(&self) {
+    /// Update metrics - takes optional already-locked connectors to avoid deadlock
+    fn update_metrics(
+        &self,
+        connectors_guard: Option<
+            &std::sync::MutexGuard<'_, std::collections::HashMap<String, ConnectorInfo>>,
+        >,
+    ) {
         let mut metrics = self.metrics.lock().unwrap();
-        let connectors = self.connectors.lock().unwrap();
+
+        let active_connectors = if let Some(connectors) = connectors_guard {
+            connectors.len()
+        } else {
+            self.connectors.lock().unwrap().len()
+        };
+
         let tasks = self.tasks.lock().unwrap();
 
-        metrics.active_connectors = connectors.len();
+        metrics.active_connectors = active_connectors;
         metrics.active_tasks = tasks.len();
 
         if let Some(last_rebalance) = *self.last_rebalance_time.lock().unwrap() {
@@ -682,8 +693,8 @@ impl DistributedHerder for DistributedHerderImpl {
 
         connectors.insert(connector_name.to_string(), info.clone());
 
-        // Update metrics
-        self.update_metrics();
+        // Update metrics - pass the connectors guard to avoid deadlock
+        self.update_metrics(Some(&connectors));
 
         callback.on_completion(info);
         Ok(())
@@ -722,8 +733,8 @@ impl DistributedHerder for DistributedHerderImpl {
 
         connectors.insert(connector_name.to_string(), info.clone());
 
-        // Update metrics
-        self.update_metrics();
+        // Update metrics - pass the connectors guard to avoid deadlock
+        self.update_metrics(Some(&connectors));
 
         callback.on_completion(info);
         Ok(())
@@ -770,8 +781,8 @@ impl DistributedHerder for DistributedHerderImpl {
         })?;
 
         if let Some(info) = connectors.remove(connector_name) {
-            // Update metrics
-            self.update_metrics();
+            // Update metrics - pass the connectors guard to avoid deadlock
+            self.update_metrics(Some(&connectors));
             callback.on_completion(info);
         } else {
             return Err(Box::new(std::io::Error::new(
@@ -839,8 +850,8 @@ impl DistributedHerder for DistributedHerderImpl {
 
             info.task_count = info.tasks.len();
 
-            // Update metrics
-            self.update_metrics();
+            // Update metrics - pass the connectors guard to avoid deadlock
+            self.update_metrics(Some(&mut connectors));
         }
 
         callback.on_completion(());

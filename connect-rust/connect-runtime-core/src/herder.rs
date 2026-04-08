@@ -1615,7 +1615,16 @@ struct DefaultPlugins;
 
 impl Plugins for DefaultPlugins {
     fn all_plugins(&self) -> Vec<PluginInfo> {
-        Vec::new()
+        use crate::plugin_registry::all_plugins;
+
+        all_plugins()
+            .into_iter()
+            .map(|descriptor| PluginInfo {
+                name: descriptor.name,
+                version: descriptor.version,
+                class_name: descriptor.class_name,
+            })
+            .collect()
     }
 }
 

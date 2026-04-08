@@ -1,6 +1,6 @@
 //! Tests for connector module
 
-use connect_api::connector::{ExactlyOnceSupport, OffsetAndMetadata, TopicPartition};
+use connect_api::{ExactlyOnceSupport, OffsetAndMetadata, TopicPartition};
 
 #[test]
 fn test_topic_partition_equality() {

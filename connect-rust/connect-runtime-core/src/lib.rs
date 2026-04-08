@@ -7,7 +7,12 @@ pub mod embedded_cluster;
 pub mod errors;
 pub mod herder;
 pub mod isolation;
+pub mod kafka_config_store;
+pub mod kafka_offset_store;
+pub mod kafka_status_store;
 pub mod metrics;
+pub mod plugin_macro;
+pub mod plugin_registry;
 pub mod storage;
 pub mod worker;
 
@@ -35,6 +40,16 @@ pub use storage::{
     OffsetBackingStore, StatusBackingStore, TargetState as StorageTargetState,
     TaskState as StorageTaskState, TaskStatus, TopicState, TopicStatus,
 };
+
+// Re-export main types from kafka_offset_store module module
+pub use kafka_offset_store::{Closeable as OffsetStoreCloseable, KafkaOffsetBackingStore};
+
+// Re-export main types from kafka_status_store module module
+pub use kafka_status_store::KafkaStatusBackingStore;
+
+// Re-export main types from kafka_config_store module module
+pub use connect_api::Closeable as ConfigStoreCloseable;
+pub use kafka_config_store::KafkaConfigBackingStore;
 
 // Re-export main types from config module
 pub use config::{

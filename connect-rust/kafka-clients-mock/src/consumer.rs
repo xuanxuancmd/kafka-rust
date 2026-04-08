@@ -29,6 +29,7 @@ pub struct MockConsumerRecord {
     pub offset: i64,
     pub key: Option<Vec<u8>>,
     pub value: Option<Vec<u8>>,
+    pub timestamp: Option<i64>,
 }
 
 impl MockConsumer {
@@ -51,6 +52,37 @@ impl MockConsumer {
         topic_records.extend(records);
     }
 
+    /// Get all records for a topic
+    pub fn get_records_for_topic(&self, topic: &str) -> Vec<MockConsumerRecord> {
+        let records = self.records.lock().unwrap();
+        records.get(topic).cloned().unwrap_or_default()
+    }
+
+    /// Get all records
+    pub fn get_all_records(&self) -> Vec<MockConsumerRecord> {
+        let records = self.records.lock().unwrap();
+        records.values().flatten().cloned().collect()
+    }
+
+    /// Clear all records
+    pub fn clear_records(&self) {
+        let mut records = self.records.lock().unwrap();
+        records.clear();
+    }
+
+    /// Get current position for a topic-partition
+    pub fn get_position(&self, topic: &str, partition: i32) -> i64 {
+        let positions = self.positions.lock().unwrap();
+        let key = (topic.to_string(), partition);
+        *positions.get(&key).unwrap_or(&0)
+    }
+
+    /// Set position for a topic-partition
+    pub fn set_position(&self, topic: &str, partition: i32, offset: i64) {
+        let mut positions = self.positions.lock().unwrap();
+        positions.insert((topic.to_string(), partition), offset);
+    }
+
     /// Get subscribed topics
     pub fn get_subscribed_topics(&self) -> HashSet<String> {
         let topics = self.subscribed_topics.lock().unwrap();
@@ -70,11 +102,7 @@ impl Default for MockConsumer {
     }
 }
 
-impl<K, V> KafkaConsumer<K, V> for MockConsumer
-where
-    K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
-{
+impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
     fn subscribe(&self, topics: Vec<String>) -> impl std::future::Future<Output = Result<(), String>> + Send {
         let closed = self.closed.clone();
         let subscribed_topics = self.subscribed_topics.clone();
@@ -129,8 +157,11 @@ where
     fn poll(
         &self,
         _timeout: Duration,
-    ) -> impl std::future::Future<Output = Result<Vec<ConsumerRecord<K, V>>, String>> + Send {
+    ) -> impl std::future::Future<Output = Result<Vec<ConsumerRecord<Vec<u8>, Vec<u8>>>, String>> + Send {
         let closed = self.closed.clone();
+        let records = self.records.clone();
+        let assigned_partitions = self.assigned_partitions.clone();
+        let positions = self.positions.clone();
 
         async move {
             let is_closed = *closed.lock().unwrap();
@@ -138,8 +169,64 @@ where
                 return Err("Consumer is closed".to_string());
             }
 
-            // Mock poll returns empty records
-            Ok(Vec::new())
+            // Get assigned partitions
+            let partitions = {
+                let guard = assigned_partitions.lock().unwrap();
+                guard.clone()
+            };
+
+            if partitions.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Get current positions and build results
+            let mut results = Vec::new();
+            {
+                let positions_guard = positions.lock().unwrap();
+                let records_guard = records.lock().unwrap();
+
+                for (topic, partition) in &partitions {
+                    let topic_str = topic.clone();
+                    if let Some(topic_records) = records_guard.get(&topic_str) {
+                        // Get current position for this partition
+                        let current_offset = *positions_guard
+                            .get(&(topic_str.clone(), *partition))
+                            .unwrap_or(&0);
+
+                        // Find records from current position
+                        for record in topic_records {
+                            if record.partition == *partition && record.offset >= current_offset {
+                                // For mock, we use Vec<u8> as the concrete type
+                                // In real Kafka, serde would handle serialization
+                                results.push(ConsumerRecord {
+                                    topic: record.topic.clone(),
+                                    partition: record.partition,
+                                    offset: record.offset,
+                                    key: record.key.clone(),
+                                    value: record.value.clone(),
+                                    timestamp: record.timestamp.unwrap_or(0),
+                                    timestamp_type: kafka_clients_trait::consumer::TimestampType::CreateTime,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update positions to track consumption
+            if !results.is_empty() {
+                let mut positions_guard = positions.lock().unwrap();
+                for record in &results {
+                    let key = (record.topic.clone(), record.partition);
+                    // Set position to next offset after the highest record consumed
+                    let current = positions_guard.get(&key).copied().unwrap_or(0);
+                    if record.offset + 1 > current {
+                        positions_guard.insert(key, record.offset + 1);
+                    }
+                }
+            }
+
+            Ok(results)
         }
     }
 

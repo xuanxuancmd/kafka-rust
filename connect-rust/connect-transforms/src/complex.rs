@@ -2,8 +2,7 @@
 //!
 //! This module provides complex built-in transformation implementations.
 
-use connect_api::connector::{Closeable, Configurable};
-use connect_api::{ConfigDef, ConfigValue, ConnectRecord, Transformation};
+use connect_api::{Closeable, ConfigDef, ConfigValue, Configurable, ConnectRecord, Transformation};
 use std::collections::HashMap;
 use std::error::Error;
 use std::marker::PhantomData;

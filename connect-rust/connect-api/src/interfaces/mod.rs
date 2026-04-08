@@ -13,28 +13,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Kafka Connect API for Rust
-//!
-//! This crate provides the core types and traits for implementing Kafka Connect connectors
-//! in Rust.
-
-pub mod config;
-pub mod converters;
-pub mod data;
-pub mod error;
-pub mod health;
-pub mod interfaces;
-pub mod storage;
-pub mod utils;
-
-pub mod connector_impl;
-pub mod connector_types;
-
-// Re-export commonly used types
-pub use connector_impl::*;
-pub use connector_types::*;
-
-// Re-export data module types for convenience
-pub use data::{
-    ConnectRecord, Headers, Schema, SchemaBuilder, SchemaProjector, SchemaType, Struct, Type,
-};
+//! Interfaces module for Kafka Connect API.
+//! This module contains interface-related types and traits.

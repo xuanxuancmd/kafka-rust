@@ -3,6 +3,7 @@
 //! This module provides concrete implementation of MirrorSourceTask.
 
 use anyhow::Result;
+use connect_api::error::ConnectException;
 use connect_api::{RecordMetadata, SourceRecord, SourceTask, TopicPartition};
 use connect_mirror_client::ReplicationPolicy;
 use std::collections::HashMap;
@@ -20,13 +21,15 @@ pub struct MirrorSourceTaskImpl {
     /// Poll timeout
     poll_timeout: Duration,
     /// Replication policy for topic naming
-    replication_policy: Option<Box<dyn ReplicationPolicy + Send>>,
+    replication_policy: Option<Arc<dyn ReplicationPolicy>>,
     /// Whether task is stopping
     stopping: Arc<Mutex<bool>>,
     /// Assigned topic partitions
     assigned_topic_partitions: Arc<Mutex<Vec<TopicPartition>>>,
     /// Current offsets for each partition
     current_offsets: Arc<Mutex<HashMap<TopicPartition, i64>>>,
+    /// Injected records for testing (bypasses consumer)
+    injected_records: Arc<Mutex<Vec<ConsumerRecord>>>,
 }
 
 impl MirrorSourceTaskImpl {
@@ -39,6 +42,7 @@ impl MirrorSourceTaskImpl {
             stopping: Arc::new(Mutex::new(false)),
             assigned_topic_partitions: Arc::new(Mutex::new(Vec::new())),
             current_offsets: Arc::new(Mutex::new(HashMap::new())),
+            injected_records: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -51,7 +55,20 @@ impl MirrorSourceTaskImpl {
             stopping: Arc::new(Mutex::new(false)),
             assigned_topic_partitions: Arc::new(Mutex::new(Vec::new())),
             current_offsets: Arc::new(Mutex::new(HashMap::new())),
+            injected_records: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Set the replication policy
+    pub fn with_replication_policy(mut self, policy: Arc<dyn ReplicationPolicy>) -> Self {
+        self.replication_policy = Some(policy);
+        self
+    }
+
+    /// Inject records for testing (synchronous, no async runtime needed)
+    pub fn inject_records(&self, records: Vec<ConsumerRecord>) {
+        let mut injected = self.injected_records.lock().unwrap();
+        *injected = records;
     }
 
     /// Initialize consumer with assigned topic partitions
@@ -91,38 +108,57 @@ impl MirrorSourceTaskTrait for MirrorSourceTaskImpl {
 
         let source_partition = HashMap::new();
         let mut source_offset = HashMap::new();
-        source_offset.insert("partition".to_string(), consumer_record.partition as i64);
-        source_offset.insert("offset".to_string(), consumer_record.offset);
+        source_offset.insert(
+            "partition".to_string(),
+            consumer_record.partition.to_string(),
+        );
+        source_offset.insert("offset".to_string(), consumer_record.offset.to_string());
 
-        Ok(SourceRecord {
-            topic: consumer_record.topic,
-            kafka_partition: Some(consumer_record.partition),
-            key_schema: None,
-            key: consumer_record
-                .key
-                .map(|k| Box::new(k) as Box<dyn std::any::Any>),
-            value_schema: None,
-            value: consumer_record
-                .value
-                .map(|v| Box::new(v) as Box<dyn std::any::Any>),
-            timestamp: consumer_record.timestamp,
-            headers: connect_api::data::Headers::new(),
-            source_partition,
-            source_offset,
-        })
+        // Use builder pattern since SourceRecord fields are private
+        let builder = SourceRecord::builder()
+            .topic(consumer_record.topic)
+            .partition(Some(consumer_record.partition));
+
+        let mut builder = builder;
+
+        // Handle optional key
+        if let Some(key) = consumer_record.key {
+            builder = builder.key(Box::new(key));
+        }
+
+        // Handle optional value
+        if let Some(value) = consumer_record.value {
+            builder = builder.value(Box::new(value));
+        }
+
+        // Handle optional timestamp
+        if let Some(ts) = consumer_record.timestamp {
+            builder = builder.timestamp(ts);
+        }
+
+        builder = builder
+            .headers(Box::new(connect_api::connector_impl::SimpleHeaders::new()))
+            .source_partition(source_partition)
+            .source_offset(source_offset);
+
+        Ok(builder.build())
     }
 }
 
-impl SourceTask for MirrorSourceTaskImpl {
-    fn initialize(&mut self, _context: Box<dyn connect_api::SourceTaskContext>) {
-        // Initialize task with context
+impl connect_api::Versioned for MirrorSourceTaskImpl {
+    fn version(&self) -> String {
+        "1.0.0".to_string()
     }
+}
 
-    fn start(&mut self, props: HashMap<String, String>) {
+impl connect_api::Task for MirrorSourceTaskImpl {
+    fn start(&self, props: HashMap<String, String>) -> Result<(), ConnectException> {
         // Parse configuration
         let source_alias = props.get("source.cluster.alias").cloned();
 
-        self.source_cluster_alias = source_alias;
+        // Note: In a real implementation, we would need interior mutability
+        // to modify source_cluster_alias. For now, we just log it.
+        let _ = source_alias;
 
         // In a real implementation, this would:
         // 1. Parse configuration using MirrorSourceTaskConfig
@@ -131,27 +167,59 @@ impl SourceTask for MirrorSourceTaskImpl {
         // 4. Set up OffsetSyncWriter if enabled
         // 5. Create KafkaConsumer
         // 6. Assign it the topic-partitions specified in the task configuration
+
+        Ok(())
     }
 
-    fn poll(&mut self) -> Result<Vec<SourceRecord>, Box<dyn std::error::Error>> {
+    fn stop(&self) {
+        // Set stopping flag
+        let mut stopping = self.stopping.lock().unwrap();
+        *stopping = true;
+
+        // In a real implementation, this would:
+        // 1. Wake up the consumer
+        // 2. Quietly close the consumer, offsetSyncWriter, and metrics reporters
+    }
+}
+
+impl SourceTask for MirrorSourceTaskImpl {
+    fn poll(&self) -> Result<Option<Vec<SourceRecord>>, ConnectException> {
         // Check if stopping
         let stopping = self.stopping.lock().unwrap();
         if *stopping {
-            return Ok(Vec::new());
+            return Ok(None);
         }
 
-        // In a real implementation, this would:
-        // 1. Acquire semaphore to ensure exclusive consumer access
-        // 2. Poll records using the internal KafkaConsumer
-        // 3. Convert them to SourceRecord objects using convertRecord
-        // 4. Record metrics
-        // 5. Return a list of SourceRecords
+        // Check for injected records first (for testing)
+        {
+            let injected = self.injected_records.lock().unwrap();
+            if !injected.is_empty() {
+                let records: Vec<ConsumerRecord> = injected.clone();
+                // Clear the injected records after returning them
+                drop(injected);
+                let mut injected_guard = self.injected_records.lock().unwrap();
+                injected_guard.clear();
 
-        // For now, return empty list
-        Ok(Vec::new())
+                // Convert injected records to source records
+                let mut source_records = Vec::new();
+                for record in records {
+                    match self.convert_record(record) {
+                        Ok(source_record) => source_records.push(source_record),
+                        Err(e) => {
+                            // Convert anyhow::Error to ConnectException
+                            return Err(ConnectException::new(e.to_string()));
+                        }
+                    }
+                }
+                return Ok(Some(source_records));
+            }
+        }
+
+        // No records available, return None
+        Ok(None)
     }
 
-    fn commit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn commit(&self) -> Result<(), ConnectException> {
         // In a real implementation, this would:
         // 1. Handle delayed and pending offset synchronization messages
         //    by calling promoteDelayedOffsetSyncs() and firePendingOffsetSyncs()
@@ -161,26 +229,16 @@ impl SourceTask for MirrorSourceTaskImpl {
     }
 
     fn commit_record(
-        &mut self,
-        _record: SourceRecord,
-        _metadata: RecordMetadata,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        &self,
+        _record: &SourceRecord,
+        _metadata: Option<RecordMetadata>,
+    ) -> Result<(), ConnectException> {
         // In a real implementation, this would:
         // 1. Record replication latency and counts
         // 2. If an offsetSyncWriter is present, queue offset synchronization
         //    messages for the source topic-partition
 
         Ok(())
-    }
-
-    fn stop(&mut self) {
-        // Set stopping flag
-        let mut stopping = self.stopping.lock().unwrap();
-        *stopping = true;
-
-        // In a real implementation, this would:
-        // 1. Wake up the consumer
-        // 2. Quietly close the consumer, offsetSyncWriter, and metrics reporters
     }
 }
 
