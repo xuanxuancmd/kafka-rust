@@ -17,7 +17,7 @@ pub struct MockConsumer {
     subscribed_topics: Arc<Mutex<HashSet<String>>>,
     /// Assigned partitions
     assigned_partitions: Arc<Mutex<HashSet<(String, i32)>>>,
-    /// Whether the consumer is closed
+    /// Whether consumer is closed
     closed: Arc<Mutex<bool>>,
 }
 
@@ -38,6 +38,17 @@ impl MockConsumer {
         MockConsumer {
             records: Arc::new
 (Mutex::new(HashMap::new())),
+            positions: Arc::new(Mutex::new(HashMap::new())),
+            subscribed_topics: Arc::new(Mutex::new(HashSet::new())),
+            assigned_partitions: Arc::new(Mutex::new(HashSet::new())),
+            closed: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Create a new mock consumer with shared storage
+    pub fn new_with_storage(records: Arc<Mutex<HashMap<String, Vec<MockConsumerRecord>>>>) -> Self {
+        MockConsumer {
+            records,
             positions: Arc::new(Mutex::new(HashMap::new())),
             subscribed_topics: Arc::new(Mutex::new(HashSet::new())),
             assigned_partitions: Arc::new(Mutex::new(HashSet::new())),
@@ -190,13 +201,14 @@ impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
                     if let Some(topic_records) = records_guard.get(&topic_str) {
                         // Get current position for this partition
                         let current_offset = *positions_guard
+
                             .get(&(topic_str.clone(), *partition))
                             .unwrap_or(&0);
 
                         // Find records from current position
                         for record in topic_records {
                             if record.partition == *partition && record.offset >= current_offset {
-                                // For mock, we use Vec<u8> as the concrete type
+                                // For mock, we use Vec<u8> as concrete type
                                 // In real Kafka, serde would handle serialization
                                 results.push(ConsumerRecord {
                                     topic: record.topic.clone(),
@@ -218,7 +230,7 @@ impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
                 let mut positions_guard = positions.lock().unwrap();
                 for record in &results {
                     let key = (record.topic.clone(), record.partition);
-                    // Set position to next offset after the highest record consumed
+                    // Set position to next offset after highest record consumed
                     let current = positions_guard.get(&key).copied().unwrap_or(0);
                     if record.offset + 1 > current {
                         positions_guard.insert(key, record.offset + 1);
@@ -279,6 +291,7 @@ impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
 
             let partitions_guard = assigned_partitions.lock().unwrap();
             let partitions: Vec<TopicPartition> = partitions_guard
+
                 .iter()
                 .map(|(topic, partition)| TopicPartition {
                     topic: topic.clone(),

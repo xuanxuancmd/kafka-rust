@@ -13,7 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{ConnectError, ConnectException, DataException};
+use crate::connector_types::ConnectRecord;
+use crate::error::{ConnectException, DataException};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
@@ -106,6 +107,12 @@ pub trait Schema: fmt::Debug + Send + Sync {
 
     /// Validates if a given value conforms to this schema.
     fn validate_value(&self, value: &dyn Any) -> Result<(), DataException>;
+
+    /// Returns `self` if this is a `ConnectSchema`, otherwise `None`.
+    /// This allows downcasting from `dyn Schema` to `ConnectSchema`.
+    fn as_connect_schema(&self) -> Option<&ConnectSchema> {
+        None
+    }
 }
 
 /// Field represents a field within a STRUCT schema.
@@ -501,6 +508,10 @@ impl Schema for ConnectSchema {
 
     fn validate_value(&self, value: &dyn Any) -> Result<(), DataException> {
         ConnectSchema::validate_value_static(self, value)
+    }
+
+    fn as_connect_schema(&self) -> Option<&ConnectSchema> {
+        Some(self)
     }
 }
 
@@ -1355,8 +1366,11 @@ pub trait Headers: Send + Sync {
     /// Adds a header
     fn add(&mut self, header: Box<dyn Header>);
 
-    /// Removes a header by key
-    fn remove(&self, key: &str) -> Box<dyn Headers>;
+    /// Removes headers with the given keys and returns new headers
+    fn remove_headers(&mut self, keys: &[String]) -> Box<dyn Headers>;
+
+    /// Removes a header by key and returns new headers
+    fn remove(&mut self, key: &str) -> Box<dyn Headers>;
 
     /// Returns a duplicate of the headers
     fn duplicate(&self) -> Box<dyn Headers>;
@@ -1381,6 +1395,19 @@ impl ConcreteHeaders {
 impl Default for ConcreteHeaders {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for ConcreteHeaders {
+    fn clone(&self) -> Self {
+        let mut new_headers = ConcreteHeaders::new();
+        for h in &self.headers {
+            // Clone the header value
+            let schema = h.schema();
+            let value = h.value();
+            new_headers.add(h.with(schema, value));
+        }
+        new_headers
     }
 }
 
@@ -1413,7 +1440,17 @@ impl Headers for ConcreteHeaders {
         self.headers.push(header);
     }
 
-    fn remove(&self, key: &str) -> Box<dyn Headers> {
+    fn remove_headers(&mut self, keys: &[String]) -> Box<dyn Headers> {
+        let mut new_headers = ConcreteHeaders::new();
+        for h in &self.headers {
+            if !keys.contains(&h.key().to_string()) {
+                new_headers.add(h.with(h.schema(), h.value().clone()));
+            }
+        }
+        Box::new(new_headers)
+    }
+
+    fn remove(&mut self, key: &str) -> Box<dyn Headers> {
         let mut new_headers = ConcreteHeaders::new();
         for h in &self.headers {
             if h.key() != key {
@@ -1432,41 +1469,8 @@ impl Headers for ConcreteHeaders {
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = &dyn Header> + '_> {
-        // Note: Cannot easily implement iter for trait objects
-        // Return empty iterator for now
-        Box::new(std::iter::empty())
+        Box::new(self.headers.iter().map(|h| h.as_ref()))
     }
-}
-
-// ============================================================================================
-// ConnectRecord - base trait for SourceRecord and SinkRecord
-// ============================================================================================
-
-/// ConnectRecord is the base trait for records in Kafka Connect
-pub trait ConnectRecord<T>: Send + Sync {
-    /// Returns the topic
-    fn topic(&self) -> &str;
-
-    /// Returns the Kafka partition
-    fn kafka_partition(&self) -> Option<i32>;
-
-    /// Returns the key schema
-    fn key_schema(&self) -> Option<Arc<dyn Schema>>;
-
-    /// Returns the key
-    fn key(&self) -> Option<Arc<dyn Any + Send + Sync>>;
-
-    /// Returns the value schema
-    fn value_schema(&self) -> Option<Arc<dyn Schema>>;
-
-    /// Returns the value
-    fn value(&self) -> Option<Arc<dyn Any + Send + Sync>>;
-
-    /// Returns the timestamp
-    fn timestamp(&self) -> Option<i64>;
-
-    /// Returns the headers
-    fn headers(&self) -> &dyn Headers;
 }
 
 // ============================================================================================
@@ -1583,6 +1587,37 @@ impl ConnectRecord<SourceRecord> for SourceRecord {
 
     fn headers(&self) -> &dyn Headers {
         self.headers()
+    }
+
+    fn new_record(
+        self,
+        topic: Option<&str>,
+        partition: Option<i32>,
+        key_schema: Option<Arc<dyn Schema>>,
+        key: Option<Arc<dyn Any + Send + Sync>>,
+        value_schema: Option<Arc<dyn Schema>>,
+        value: Option<Arc<dyn Any + Send + Sync>>,
+        timestamp: Option<i64>,
+        headers: Option<Box<dyn Headers>>,
+    ) -> SourceRecord {
+        let headers_box = if let Some(h) = headers {
+            h.duplicate()
+        } else {
+            Box::new(ConcreteHeaders::new())
+        };
+
+        SourceRecord {
+            topic: topic.unwrap_or(&self.topic).to_string(),
+            kafka_partition: partition.or(self.kafka_partition),
+            key_schema: key_schema.or(self.key_schema),
+            key: key.or(self.key),
+            value_schema: value_schema.or(self.value_schema),
+            value: value.or(self.value),
+            timestamp: timestamp.or(self.timestamp),
+            headers: headers_box,
+            source_partition: self.source_partition,
+            source_offset: self.source_offset,
+        }
     }
 }
 
@@ -1794,6 +1829,36 @@ impl ConnectRecord<SinkRecord> for SinkRecord {
 
     fn headers(&self) -> &dyn Headers {
         self.headers()
+    }
+
+    fn new_record(
+        self,
+        topic: Option<&str>,
+        partition: Option<i32>,
+        key_schema: Option<Arc<dyn Schema>>,
+        key: Option<Arc<dyn Any + Send + Sync>>,
+        value_schema: Option<Arc<dyn Schema>>,
+        value: Option<Arc<dyn Any + Send + Sync>>,
+        timestamp: Option<i64>,
+        headers: Option<Box<dyn Headers>>,
+    ) -> SinkRecord {
+        let headers_box = if let Some(h) = headers {
+            h.duplicate()
+        } else {
+            Box::new(ConcreteHeaders::new())
+        };
+
+        SinkRecord {
+            topic: topic.unwrap_or(&self.topic).to_string(),
+            kafka_partition: partition.unwrap_or(self.kafka_partition),
+            key_schema: key_schema.or(self.key_schema),
+            key: key.or(self.key),
+            value_schema: value_schema.or(self.value_schema),
+            value: value.or(self.value),
+            timestamp: timestamp.or(self.timestamp),
+            headers: headers_box,
+            kafka_offset: self.kafka_offset,
+        }
     }
 }
 

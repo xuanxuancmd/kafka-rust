@@ -1,15 +1,19 @@
 //! SetSchemaMetadata transformation
 //!
-//! This module provides the SetSchemaMetadata transformation that updates
-//! the name and/or version of a record's schema.
+//! This module provides SetSchemaMetadata transformation that updates
+//! name and/or version of a record's schema.
 
+use connect_api::connector_types::ConnectRecord;
 use connect_api::data::Schema;
-use connect_api::{Closeable, ConfigDef, ConfigValue, Configurable, ConnectRecord, Transformation};
+use connect_api::{Closeable, ConfigDef, ConfigValue, Configurable, Transformation};
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+// Re-export Schema from connect_api for convenience
+use connect_api::data::Schema as ConnectSchema;
 
 /// SetSchemaMetadata transformation
 ///
@@ -74,12 +78,12 @@ impl<R: ConnectRecord<R>> SetSchemaMetadata<R> {
     }
 
     /// Updates a schema with the configured name and version
-    fn update_schema(&self, schema: &Arc<dyn Schema>) -> Arc<dyn Schema> {
+    fn update_schema(&self, schema: &Arc<dyn Schema>) -> Result<Arc<dyn Schema>, Box<dyn Error>> {
         // Since Schema is a trait and we can't modify Arc<dyn Schema> directly,
         // we need to create a new schema with updated metadata
         // For now, return the original schema as a placeholder
         // In a real implementation, we would need to clone the schema with new metadata
-        Arc::clone(schema)
+        Ok(Arc::clone(schema))
     }
 
     /// Validates that at least one of name or version is set
@@ -138,7 +142,10 @@ impl<R: ConnectRecord<R>> Closeable for SetSchemaMetadata<R> {
     }
 }
 
-impl<R: ConnectRecord<R>> Transformation<R> for SetSchemaMetadata<R> {
+impl<R> Transformation<R> for SetSchemaMetadata<R>
+where
+    R: ConnectRecord<R>,
+{
     fn apply(&mut self, record: R) -> Result<Option<R>, Box<dyn Error>> {
         // Validate configuration
         self.validate_config()?;
@@ -149,16 +156,57 @@ impl<R: ConnectRecord<R>> Transformation<R> for SetSchemaMetadata<R> {
             return Ok(Some(record));
         }
 
-        // Note: Since ConnectRecord is a trait and we can't modify records directly,
-        // we would need to create a new record with updated schemas
-        // For now, return the record as-is as a placeholder
-        // In a real implementation, we would:
-        // 1. Get the key schema if modify_key_schema is true
-        // 2. Get the value schema if modify_value_schema is true
-        // 3. Update the schemas with new name/version
-        // 4. Create a new record with updated schemas
+        // Collect all needed values before moving record
+        let topic = record.topic().to_string();
+        let kafka_partition = record.kafka_partition();
+        let key = record.key();
+        let value = record.value();
+        let timestamp = record.timestamp();
 
-        Ok(Some(record))
+        // Get current schemas
+        let key_schema = record.key_schema();
+        let value_schema = record.value_schema();
+
+        // Update schemas with new name/version
+        let updated_key_schema = if self.modify_key_schema {
+            if let Some(ref ks) = key_schema {
+                match self.update_schema(ks) {
+                    Ok(schema) => Some(schema),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                None
+            }
+        } else {
+            key_schema
+        };
+
+        let updated_value_schema = if self.modify_value_schema {
+            if let Some(ref vs) = value_schema {
+                match self.update_schema(vs) {
+                    Ok(schema) => Some(schema),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                None
+            }
+        } else {
+            value_schema
+        };
+
+        // Create new record with updated schemas
+        let new_record = record.new_record(
+            Some(&topic),
+            kafka_partition,
+            updated_key_schema,
+            key,
+            updated_value_schema,
+            value,
+            timestamp,
+            None, // Use default headers behavior
+        );
+
+        Ok(Some(new_record))
     }
 
     fn config(&self) -> ConfigDef {

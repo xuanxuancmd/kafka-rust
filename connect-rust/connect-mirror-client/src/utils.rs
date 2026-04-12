@@ -318,12 +318,22 @@ impl RemoteClusterUtils {
     ///
     /// # 返回
     /// 复制跳数
+    ///
+    /// # 参数
+    /// - `properties`: 配置属性
+    /// - `upstream_cluster_alias`: 上游集群别名
+    ///
+    /// # 返回
+    /// 复制跳数
     pub fn replication_hops(
         properties: &HashMap<String, String>,
         upstream_cluster_alias: &str,
     ) -> Result<i32, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.replication_hops(upstream_cluster_alias.to_string());
         client.close()?;
         result
@@ -340,7 +350,10 @@ impl RemoteClusterUtils {
         properties: &HashMap<String, String>,
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.heartbeat_topics();
         client.close()?;
         result
@@ -357,7 +370,10 @@ impl RemoteClusterUtils {
         properties: &HashMap<String, String>,
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.checkpoint_topics();
         client.close()?;
         result
@@ -374,7 +390,10 @@ impl RemoteClusterUtils {
         properties: &HashMap<String, String>,
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.upstream_clusters();
         client.close()?;
         result
@@ -391,7 +410,10 @@ impl RemoteClusterUtils {
         properties: &HashMap<String, String>,
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.remote_topics();
         client.close()?;
         result
@@ -410,7 +432,10 @@ impl RemoteClusterUtils {
         source: &str,
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.remote_topics_for_source(source.to_string());
         client.close()?;
         result
@@ -433,7 +458,10 @@ impl RemoteClusterUtils {
         timeout: i64,
     ) -> Result<HashMap<String, i64>, Box<dyn Error>> {
         let config = MirrorClientConfig::new(properties.clone());
-        let mut client = crate::client::BasicMirrorClient::new(config);
+        let mut client = crate::client::BasicMirrorClient::with_params(
+            config.replication_policy(),
+            config.consumer_config(),
+        );
         let result = client.remote_consumer_offsets(
             consumer_group_id.to_string(),
             remote_cluster_alias.to_string(),

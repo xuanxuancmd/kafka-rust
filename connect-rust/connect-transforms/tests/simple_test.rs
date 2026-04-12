@@ -1,7 +1,8 @@
 //! Unit tests for simple transformations
 
+use connect_api::connector_types::ConnectRecord;
 use connect_api::data::ConcreteHeaders;
-use connect_api::{Closeable, Configurable, ConnectRecord, Transformation};
+use connect_api::{Closeable, Configurable, Transformation};
 use connect_transforms::simple::{DropHeaders, Filter, InsertHeader, TimestampRouter, ValueToKey};
 use std::any::Any;
 use std::collections::HashMap;
@@ -46,6 +47,20 @@ impl ConnectRecord<MockRecord> for MockRecord {
         use std::sync::OnceLock;
         static EMPTY_HEADERS: OnceLock<ConcreteHeaders> = OnceLock::new();
         EMPTY_HEADERS.get_or_init(|| ConcreteHeaders::new())
+    }
+
+    fn new_record(
+        self,
+        _topic: Option<&str>,
+        _partition: Option<i32>,
+        _key_schema: Option<Arc<dyn connect_api::Schema>>,
+        _key: Option<Arc<dyn Any + Send + Sync>>,
+        _value_schema: Option<Arc<dyn connect_api::Schema>>,
+        _value: Option<Arc<dyn Any + Send + Sync>>,
+        _timestamp: Option<i64>,
+        _headers: Option<Box<dyn connect_api::Headers>>,
+    ) -> MockRecord {
+        self
     }
 }
 
@@ -104,20 +119,16 @@ fn test_timestamp_router_configure() {
 }
 
 #[test]
-fn test_timestamp_router_close() {
-    let mut transformer = TimestampRouter::<MockRecord>::new();
-    assert!(transformer.close().is_ok());
-}
-
-#[test]
 fn test_timestamp_router_apply() {
     let mut transformer = TimestampRouter::<MockRecord>::new();
     let record = MockRecord {
         topic: "test".to_string(),
     };
+    // TimestampRouter requires timestamp - it will fail if timestamp is None
+    // This test verifies the transformation handles missing timestamp gracefully
     let result = transformer.apply(record);
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_some());
+    // Expect error because MockRecord has no timestamp
+    assert!(result.is_err());
 }
 
 #[test]

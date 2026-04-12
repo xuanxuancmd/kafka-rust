@@ -5,15 +5,16 @@
 /// ReplicationPolicy - 主题名称复制策略
 ///
 /// 定义如何复制和转换主题名称的策略接口
-pub trait ReplicationPolicy: Send + Sync {
+pub trait ReplicationPolicy: Send + Sync + 'static {
     /// 格式化远程主题名称
     ///
     /// # 参数
-    /// - `topic`: �原始主题名称
+    /// - `source_cluster_alias`: 源集群别名
+    /// - `topic`: 原始主题名称
     ///
     /// # 返回
     /// 格式化后的远程主题名称
-    fn format_remote_topic(&self, topic: String) -> String;
+    fn format_remote_topic(&self, source_cluster_alias: String, topic: String) -> String;
 
     /// 获取主题源集群别名
     ///
@@ -44,21 +45,57 @@ pub trait ReplicationPolicy: Send + Sync {
 
     /// 获取心跳主题名称
     ///
+    /// # 参数
+    /// - `cluster_alias`: 集群别名
+    ///
     /// # 返回
     /// 心跳主题名称
     fn heartbeats_topic(&self) -> String;
 
     /// 获取偏移同步主题名称
     ///
+    /// # 参数
+    /// - `cluster_alias`: 集群别名
+    ///
     /// # 返回
     /// 偏移同步主题名称
-    fn offset_syncs_topic(&self) -> String;
+    fn offset_syncs_topic(&self, cluster_alias: String) -> String;
 
     /// 获取检查点主题名称
     ///
+    /// # 参数
+    /// - `cluster_alias`: 集群别名
+    ///
     /// # 返回
-    /// 检查查点主题名称
-    fn checkpoints_topic(&self) -> String;
+    /// 检查点主题名称
+    fn checkpoints_topic(&self, cluster_alias: String) -> String;
+
+    /// 判断是否为心跳主题
+    ///
+    /// # 参数
+    /// - `topic`: 主题名称
+    ///
+    /// # 返回
+    /// 如果是心跳主题返回true，否则返回false
+    fn is_heartbeats_topic(&self, topic: &str) -> bool;
+
+    /// 判断是否为检查点主题
+    ///
+    /// # 参数
+    /// - `topic`: 主题名称
+    ///
+    /// # 返回
+    /// 如果是检查点主题返回true，否则返回false
+    fn is_checkpoints_topic(&self, topic: &str) -> bool;
+
+    /// 判断是否为MM2内部主题
+    ///
+    /// # 参数
+    /// - `topic`: 主题名称
+    ///
+    /// # 返回
+    /// 如果是MM2内部主题返回true，否则返回false
+    fn is_mm2_internal_topic(&self, topic: &str) -> bool;
 
     /// 判断是否为内部主题
     ///
@@ -67,12 +104,13 @@ pub trait ReplicationPolicy: Send + Sync {
     ///
     /// # 返回
     /// 如果是内部主题返回true，否则返回false
-    fn is_internal_topic(&self, topic: String) -> bool;
+    fn is_internal_topic(&self, topic: &str) -> bool;
 }
 
 /// DefaultReplicationPolicy - 默认复制策略
 ///
 /// 在远程主题名称前添加源集群别名（如：us-west.topic）
+#[derive(Clone)]
 pub struct DefaultReplicationPolicy {
     /// 分隔符，默认为'.'
     separator: String,
@@ -138,7 +176,7 @@ impl DefaultReplicationPolicy {
         format!(
             "{}checkpoints{}",
             self.internal_separator(),
-            self.internal_separator()
+            self.internal_suffix()
         )
     }
 
@@ -151,10 +189,10 @@ impl DefaultReplicationPolicy {
     /// 偏移同步主题名称
     pub fn offset_syncs_topic_for_cluster(&self, cluster_alias: &str) -> String {
         format!(
-            "{}{}offset-syncs{}",
-            cluster_alias,
+            "mm2-offset-syncs{}{}{}",
             self.internal_separator(),
-            self.internal_separator()
+            cluster_alias,
+            self.internal_suffix()
         )
     }
 
@@ -166,12 +204,7 @@ impl DefaultReplicationPolicy {
     /// # 返回
     /// 检查点主题名称
     pub fn checkpoints_topic_for_cluster(&self, cluster_alias: &str) -> String {
-        format!(
-            "{}{}checkpoints{}",
-            cluster_alias,
-            self.internal_separator(),
-            self.internal_separator()
-        )
+        format!("{}{}", cluster_alias, self.checkpoints_topic_suffix())
     }
 
     /// 判断是否为检查点主题
@@ -195,11 +228,7 @@ impl DefaultReplicationPolicy {
     pub fn is_mm2_internal_topic(&self, topic: &str) -> bool {
         self.is_heartbeat_topic(topic)
             || self.is_checkpoints_topic(topic)
-            || topic.ends_with(&format!(
-                "{}offset-syncs{}",
-                self.internal_separator(),
-                self.internal_separator()
-            ))
+            || (topic.starts_with("mm2") && topic.ends_with(&self.internal_suffix()))
     }
 
     /// 判断是否为心跳主题
@@ -210,11 +239,7 @@ impl DefaultReplicationPolicy {
     /// # 返回
     /// 如果是心跳主题返回true，否则返回false
     pub fn is_heartbeat_topic(&self, topic: &str) -> bool {
-        topic.ends_with(&format!(
-            "{}heartbeats{}",
-            self.internal_separator(),
-            self.internal_separator()
-        ))
+        topic == self.heartbeats_topic()
     }
 }
 
@@ -225,14 +250,11 @@ impl Default for DefaultReplicationPolicy {
 }
 
 impl ReplicationPolicy for DefaultReplicationPolicy {
-    fn format_remote_topic(&self, topic: String) -> String {
-        // 在远程主题名称前添加源集群别名
-        // 注意：这里使用默认的"source"，实际使用时应该传入正确的源集群别名
-        format!("{}{}{}", "source", self.separator, topic)
+    fn format_remote_topic(&self, source_cluster_alias: String, topic: String) -> String {
+        format!("{}{}{}", source_cluster_alias, self.separator, topic)
     }
 
     fn topic_source(&self, topic: String) -> String {
-        // 从主题名称中提取源集群别名
         if let Some(pos) = topic.find(&self.separator) {
             topic[..pos].to_string()
         } else {
@@ -241,7 +263,6 @@ impl ReplicationPolicy for DefaultReplicationPolicy {
     }
 
     fn upstream_topic(&self, topic: String) -> String {
-        // 从主题名称中提取上游主题名称
         if let Some(pos) = topic.find(&self.separator) {
             topic[pos + self.separator.len()..].to_string()
         } else {
@@ -250,30 +271,49 @@ impl ReplicationPolicy for DefaultReplicationPolicy {
     }
 
     fn original_topic(&self, topic: String) -> String {
-        // 获取原始主题名称
         self.upstream_topic(topic)
     }
 
     fn heartbeats_topic(&self) -> String {
-        format!("heartbeats{}", self.internal_separator())
+        // Heartbeats topic is always "heartbeats" - never affected by separator config
+        "heartbeats".to_string()
     }
 
-    fn offset_syncs_topic(&self) -> String {
-        format!("offset-syncs{}", self.internal_separator())
+    fn offset_syncs_topic(&self, cluster_alias: String) -> String {
+        format!(
+            "mm2-offset-syncs{}{}{}",
+            self.internal_separator(),
+            cluster_alias,
+            self.internal_suffix()
+        )
     }
 
-    fn checkpoints_topic(&self) -> String {
-        format!("checkpoints{}", self.internal_separator())
+    fn checkpoints_topic(&self, cluster_alias: String) -> String {
+        format!("{}{}", cluster_alias, self.checkpoints_topic_suffix())
     }
 
-    fn is_internal_topic(&self, topic: String) -> bool {
-        self.is_mm2_internal_topic(&topic)
+    fn is_heartbeats_topic(&self, topic: &str) -> bool {
+        self.is_heartbeat_topic(topic)
+    }
+
+    fn is_checkpoints_topic(&self, topic: &str) -> bool {
+        self.is_checkpoints_topic(topic)
+    }
+
+    fn is_mm2_internal_topic(&self, topic: &str) -> bool {
+        self.is_mm2_internal_topic(topic)
+    }
+
+    fn is_internal_topic(&self, topic: &str) -> bool {
+        let is_kafka_internal = topic.starts_with("__") || topic.starts_with('.');
+        is_kafka_internal || self.is_mm2_internal_topic(topic)
     }
 }
 
 /// IdentityReplicationPolicy - 身份复制策略
 ///
 /// 不重命名远程主题，保持原始主题名称
+#[derive(Clone)]
 pub struct IdentityReplicationPolicy {
     /// 源集群别名（可选）
     source_cluster_alias: Option<String>,
@@ -323,37 +363,32 @@ impl Default for IdentityReplicationPolicy {
 }
 
 impl ReplicationPolicy for IdentityReplicationPolicy {
-    fn format_remote_topic(&self, topic: String) -> String {
-        // 不重命名远程主题，除非看起来像心跳主题
+    fn format_remote_topic(&self, source_cluster_alias: String, topic: String) -> String {
         if self.looks_like_heartbeat(&topic) {
-            self.default_policy.format_remote_topic(topic)
+            self.default_policy
+                .format_remote_topic(source_cluster_alias, topic)
         } else {
             topic
         }
     }
 
     fn topic_source(&self, topic: String) -> String {
-        // 如果不是心跳主题，返回配置的源集群别名
         if !self.looks_like_heartbeat(&topic) {
             if let Some(ref alias) = self.source_cluster_alias {
                 return alias.clone();
             }
         }
-        // 对于心跳主题，使用默认策略
         self.default_policy.topic_source(topic)
     }
 
     fn upstream_topic(&self, topic: String) -> String {
-        // 如果不是心跳主题，返回原始主题名称
         if !self.looks_like_heartbeat(&topic) {
             return topic;
         }
-        // 对于心跳主题，使用默认策略
         self.default_policy.upstream_topic(topic)
     }
 
     fn original_topic(&self, topic: String) -> String {
-        // 返回原始主题名称
         if !self.looks_like_heartbeat(&topic) {
             return topic;
         }
@@ -364,15 +399,113 @@ impl ReplicationPolicy for IdentityReplicationPolicy {
         self.default_policy.heartbeats_topic()
     }
 
-    fn offset_syncs_topic(&self) -> String {
-        self.default_policy.offset_syncs_topic()
+    fn offset_syncs_topic(&self, cluster_alias: String) -> String {
+        self.default_policy.offset_syncs_topic(cluster_alias)
     }
 
-    fn checkpoints_topic(&self) -> String {
-        self.default_policy.checkpoints_topic()
+    fn checkpoints_topic(&self, cluster_alias: String) -> String {
+        self.default_policy.checkpoints_topic(cluster_alias)
     }
 
-    fn is_internal_topic(&self, topic: String) -> bool {
+    fn is_heartbeats_topic(&self, topic: &str) -> bool {
+        self.default_policy.is_heartbeats_topic(topic)
+    }
+
+    fn is_checkpoints_topic(&self, topic: &str) -> bool {
+        self.default_policy.is_checkpoints_topic(topic)
+    }
+
+    fn is_mm2_internal_topic(&self, topic: &str) -> bool {
+        self.default_policy.is_mm2_internal_topic(topic)
+    }
+
+    fn is_internal_topic(&self, topic: &str) -> bool {
         self.default_policy.is_internal_topic(topic)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_internal_topic() {
+        let mut policy = DefaultReplicationPolicy::new();
+        let mut config = HashMap::new();
+        config.insert("replication.policy.separator".to_string(), ".".to_string());
+        policy.configure(&config);
+
+        // starts with '__'
+        assert!(policy.is_internal_topic("__consumer_offsets"));
+        // starts with '.'
+        assert!(policy.is_internal_topic(".hiddentopic"));
+
+        // starts with 'mm2' and ends with '.internal': default DistributedConfig.OFFSET_STORAGE_TOPIC_CONFIG in standalone mode.
+        assert!(policy.is_internal_topic("mm2-offsets.CLUSTER.internal"));
+        // non-internal topic.
+        assert!(!policy.is_internal_topic("mm2-offsets_CLUSTER_internal"));
+    }
+
+    #[test]
+    fn test_offset_syncs_topic_effected_by_internal_topic_separator_enabled() {
+        let mut policy = DefaultReplicationPolicy::new();
+
+        // With separator "__" and internal_topic_separator_enabled = false
+        let mut config1 = HashMap::new();
+        config1.insert("replication.policy.separator".to_string(), "__".to_string());
+        config1.insert(
+            "replication.policy.is.internal.topic.separator.enabled".to_string(),
+            "false".to_string(),
+        );
+        policy.configure(&config1);
+        assert_eq!(
+            policy.offset_syncs_topic("CLUSTER".to_string()),
+            "mm2-offset-syncs.CLUSTER.internal"
+        );
+
+        // With separator "__" and internal_topic_separator_enabled = true
+        let mut config2 = HashMap::new();
+        config2.insert("replication.policy.separator".to_string(), "__".to_string());
+        config2.insert(
+            "replication.policy.is.internal.topic.separator.enabled".to_string(),
+            "true".to_string(),
+        );
+        policy.configure(&config2);
+        assert_eq!(
+            policy.offset_syncs_topic("CLUSTER".to_string()),
+            "mm2-offset-syncs__CLUSTER__internal"
+        );
+    }
+
+    #[test]
+    fn test_checkpoints_topic_effected_by_internal_topic_separator_enabled() {
+        let mut policy = DefaultReplicationPolicy::new();
+
+        // With separator "__" and internal_topic_separator_enabled = false
+        let mut config1 = HashMap::new();
+        config1.insert("replication.policy.separator".to_string(), "__".to_string());
+        config1.insert(
+            "replication.policy.is.internal.topic.separator.enabled".to_string(),
+            "false".to_string(),
+        );
+        policy.configure(&config1);
+        assert_eq!(
+            policy.checkpoints_topic("CLUSTER".to_string()),
+            "CLUSTER.checkpoints.internal"
+        );
+
+        // With separator "__" and internal_topic_separator_enabled = true
+        let mut config2 = HashMap::new();
+        config2.insert("replication.policy.separator".to_string(), "__".to_string());
+        config2.insert(
+            "replication.policy.is.internal.topic.separator.enabled".to_string(),
+            "true".to_string(),
+        );
+        policy.configure(&config2);
+        assert_eq!(
+            policy.checkpoints_topic("CLUSTER".to_string()),
+            "CLUSTER__checkpoints__internal"
+        );
     }
 }

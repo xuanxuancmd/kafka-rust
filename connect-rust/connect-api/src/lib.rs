@@ -15,7 +15,7 @@
 
 //! Kafka Connect API for Rust
 //!
-//! This crate provides the core types and traits for implementing Kafka Connect connectors
+//! This crate provides core types and traits for implementing Kafka Connect connectors
 //! in Rust.
 
 pub mod config;
@@ -24,17 +24,17 @@ pub mod data;
 pub mod error;
 pub mod health;
 pub mod interfaces;
+pub mod policy;
+pub mod rest;
 pub mod storage;
+pub mod transforms;
 pub mod utils;
 
 pub mod connector_impl;
 pub mod connector_types;
 
-// Re-export commonly used types
+// Re-export commonly used types from connector_impl
 pub use connector_impl::*;
-pub use connector_types::*;
 
 // Re-export data module types for convenience
-pub use data::{
-    ConnectRecord, Headers, Schema, SchemaBuilder, SchemaProjector, SchemaType, Struct, Type,
-};
+pub use data::{Schema, SchemaAndValue, SchemaBuilder, SchemaProjector, SchemaType, Struct, Type};

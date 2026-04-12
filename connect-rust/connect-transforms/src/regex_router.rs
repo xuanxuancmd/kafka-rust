@@ -3,7 +3,8 @@
 //! This module provides the RegexRouter transformation which routes records
 //! to dynamically named topics based on a regular expression.
 
-use connect_api::{Closeable, ConfigDef, ConfigValue, Configurable, ConnectRecord, Transformation};
+use connect_api::connector_types::ConnectRecord;
+use connect_api::{Closeable, ConfigDef, ConfigValue, Configurable, Transformation};
 use regex::Regex;
 use std::collections::HashMap;
 use std::error::Error;
@@ -205,8 +206,11 @@ impl<R: ConnectRecord<R>> Closeable for RegexRouter<R> {
     }
 }
 
-impl<R: ConnectRecord<R>> Transformation<R> for RegexRouter<R> {
-    /// Apply the regex transformation to a record
+impl<R> Transformation<R> for RegexRouter<R>
+where
+    R: ConnectRecord<R>,
+{
+    /// Apply regex transformation to a record
     ///
     /// # Arguments
     ///
@@ -214,18 +218,51 @@ impl<R: ConnectRecord<R>> Transformation<R> for RegexRouter<R> {
     ///
     /// # Returns
     ///
-    /// Ok(Some(record)) if the transformation was applied, Ok(None) if the record was filtered
+    /// Ok(Some(record)) if transformation was applied, Ok(None) if record was filtered
     ///
     /// # Errors
     ///
-    /// Returns an error if the transformation fails
+    /// Returns an error if transformation fails
     fn apply(&mut self, record: R) -> Result<Option<R>, Box<dyn Error>> {
-        // For now, we return the record as-is since we can't easily modify the topic
-        // without more API support. In a full implementation, this would:
-        // 1. Get the topic name from the record
-        // 2. Apply the regex transformation
-        // 3. Update the record with the new topic name
-        Ok(Some(record))
+        // Get to topic name from the record - clone to avoid borrow issues
+        let topic = record.topic().to_string();
+
+        // Apply the regex transformation if pattern is configured
+        if let Some(ref pattern) = self.pattern {
+            if pattern.is_match(&topic) {
+                // Replace first match with replacement string
+                let new_topic = pattern.replace(&topic, &self.replacement);
+
+                // Collect all needed values before moving record
+                let kafka_partition = record.kafka_partition();
+                let key_schema = record.key_schema();
+                let key = record.key();
+                let value_schema = record.value_schema();
+                let value = record.value();
+                let timestamp = record.timestamp();
+
+                // Create new record with updated to topic
+                // Pass None for headers to use default behavior
+                let new_record = record.new_record(
+                    Some(&new_topic),
+                    kafka_partition,
+                    key_schema,
+                    key,
+                    value_schema,
+                    value,
+                    timestamp,
+                    None,
+                );
+
+                Ok(Some(new_record))
+            } else {
+                // Pattern doesn't match, return record as-is
+                Ok(Some(record))
+            }
+        } else {
+            // No pattern configured, return record as-is
+            Ok(Some(record))
+        }
     }
 
     /// Get the configuration definition for this transformation

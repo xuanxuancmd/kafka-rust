@@ -3,11 +3,12 @@
 //! This crate provides client library for MirrorMaker2.
 
 pub mod client;
-pub mod policy;
 pub mod models;
+pub mod policy;
+pub mod protocol;
 pub mod utils;
 
-pub use client::{MirrorClient, MirrorClientConfig, BasicMirrorClient, config_keys};
-pub use policy::{ReplicationPolicy, DefaultReplicationPolicy, IdentityReplicationPolicy};
+pub use client::{config_keys, BasicMirrorClient, MirrorClient, MirrorClientConfig};
 pub use models::{Checkpoint, Heartbeat, SourceAndTarget};
+pub use policy::{DefaultReplicationPolicy, IdentityReplicationPolicy, ReplicationPolicy};
 pub use utils::RemoteClusterUtils;

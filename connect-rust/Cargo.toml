@@ -4,11 +4,10 @@ members = [
     "kafka-clients-mock",
     "connect-api",
     "connect-transforms",
-    "connect-runtime-core",
-    "connect-runtime-distributed",
     "connect-mirror-client",
     "connect-mirror",
     "connect-basic-auth-extension",
+    "connect-runtime",
 ]
 
 [workspace.dependencies]

@@ -4,6 +4,49 @@
 
 use std::collections::HashMap;
 
+/// Connector type enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectorType {
+    /// Source connector
+    Source,
+    /// Sink connector
+    Sink,
+    /// Unknown connector type
+    Unknown,
+}
+
+impl ConnectorType {
+    /// Convert to lowercase string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConnectorType::Source => "source",
+            ConnectorType::Sink => "sink",
+            ConnectorType::Unknown => "unknown",
+        }
+    }
+
+    /// Convert string to ConnectorType
+    pub fn from_str(s: &str) -> Option<ConnectorType> {
+        match s.to_lowercase().as_str() {
+            "source" => Some(ConnectorType::Source),
+            "sink" => Some(ConnectorType::Sink),
+            _ => Some(ConnectorType::Unknown),
+        }
+    }
+}
+
+impl Default for ConnectorType {
+    fn default() -> Self {
+        ConnectorType::Unknown
+    }
+}
+
+impl std::fmt::Display for ConnectorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Task state enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskState {
@@ -45,7 +88,7 @@ impl TaskState {
 }
 
 /// Connector health information
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ConnectorHealth {
     /// Connector name
     pub name: String,

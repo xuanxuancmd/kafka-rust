@@ -111,3 +111,113 @@ impl fmt::Display for ConnectException {
 }
 
 impl std::error::Error for ConnectException {}
+
+/// Schema builder exception for schema construction errors
+#[derive(Debug, Clone)]
+pub struct SchemaBuilderException {
+    message: String,
+}
+
+impl SchemaBuilderException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SchemaBuilderException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Schema builder exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for SchemaBuilderException {}
+
+/// Schema projector exception for schema projection errors
+#[derive(Debug, Clone)]
+pub struct SchemaProjectorException {
+    message: String,
+}
+
+impl SchemaProjectorException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SchemaProjectorException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Schema projector exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for SchemaProjectorException {}
+
+/// Retriable exception for operations that can be retried
+#[derive(Debug, Clone)]
+pub struct RetriableException {
+    message: String,
+}
+
+impl RetriableException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for RetriableException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Retriable exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for RetriableException {}
+
+/// Already exists exception for duplicate resource errors
+#[derive(Debug, Clone)]
+pub struct AlreadyExistsException {
+    message: String,
+}
+
+impl AlreadyExistsException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for AlreadyExistsException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Already exists exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for AlreadyExistsException {}
+
+/// Illegal worker state exception for invalid state errors
+#[derive(Debug, Clone)]
+pub struct IllegalWorkerStateException {
+    message: String,
+}
+
+impl IllegalWorkerStateException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for IllegalWorkerStateException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Illegal worker state exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for IllegalWorkerStateException {}

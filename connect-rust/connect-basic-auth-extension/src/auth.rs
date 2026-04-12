@@ -76,144 +76,33 @@ impl Default for BasicAuthConfig {
     }
 }
 
-/// Basic auth credentials
+/// Basic auth stored credentials
 ///
-/// Stores and validates username and password credentials.
+/// Stores and validates username and password credentials for comparison.
 #[derive(Debug, Clone)]
-pub struct BasicAuthCredentials {
+pub struct BasicAuthStoredCredentials {
     username: String,
     password: String,
 }
 
-impl BasicAuthCredentials {
-    /// Create new BasicAuthCredentials
+impl BasicAuthStoredCredentials {
+    /// Create new BasicAuthStoredCredentials
     pub fn new(username: String, password: String) -> Self {
-        BasicAuthCredentials { username, password }
+        BasicAuthStoredCredentials { username, password }
     }
 
-    /// Parse credentials from Basic Auth header
-    ///
-    /// The header format is "Basic base64(username:password)"
-    pub fn from_authorization_header(header: &str) -> Result<Self, String> {
-        if !header.starts_with("Basic ") {
-            return Err("Invalid authorization header format".to_string());
-        }
-
-        let encoded = &header[6..]; // Skip "Basic "
-        let decoded =
-            base64::decode(encoded).map_err(|e| format!("Failed to decode base64: {}", e))?;
-
-        let credentials_str =
-            String::from_utf8(decoded).map_err(|e| format!("Failed to decode UTF-8: {}", e))?;
-
-        let parts: Vec<&str> = credentials_str.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err("Invalid credentials format".to_string());
-        }
-
-        Ok(BasicAuthCredentials {
-            username: parts[0].to_string(),
-            password: parts[1].to_string(),
-        })
-    }
-
-    /// Validate the provided credentials
+    /// Validate provided credentials
     pub fn validate(&self, username: &str, password: &str) -> bool {
         self.username == username && self.password == password
     }
 
-    /// Get the stored username
+    /// Get stored username
     pub fn username(&self) -> &str {
         &self.username
     }
 
-    /// Get the stored password
+    /// Get stored password
     pub fn password(&self) -> &str {
         &self.password
-    }
-}
-
-/// Basic auth extension
-///
-/// Provides basic authentication functionality for Connect REST API.
-#[derive(Debug)]
-pub struct BasicAuthExtension {
-    config: BasicAuthConfig,
-    credentials: Option<BasicAuthCredentials>,
-    version: String,
-}
-
-impl BasicAuthExtension {
-    /// Create a new BasicAuthExtension
-    pub fn new() -> Self {
-        BasicAuthExtension {
-            config: BasicAuthConfig::new(),
-            credentials: None,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }
-    }
-
-    /// Create a new BasicAuthExtension with credentials
-    pub fn with_credentials(username: String, password: String) -> Self {
-        let credentials = BasicAuthCredentials::new(username, password);
-        BasicAuthExtension {
-            config: BasicAuthConfig::with_credentials(
-                credentials.username().to_string(),
-                credentials.password().to_string(),
-            ),
-            credentials: Some(credentials),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }
-    }
-
-    /// Get the basic auth config
-    pub fn config(&self) -> &BasicAuthConfig {
-        &self.config
-    }
-
-    /// Get the credentials
-    pub fn credentials(&self) -> Option<&BasicAuthCredentials> {
-        self.credentials.as_ref()
-    }
-
-    /// Configure the basic auth extension
-    ///
-    /// @param configs Configuration properties for the extension
-    pub fn configure(&mut self, configs: HashMap<String, Box<dyn Any>>) {
-        if let Some(username) = configs.get("basic.auth.username") {
-            if let Some(username_str) = username.downcast_ref::<String>() {
-                self.config.set_username(username_str.clone());
-            }
-        }
-
-        if let Some(password) = configs.get("basic.auth.password") {
-            if let Some(password_str) = password.downcast_ref::<String>() {
-                self.config.set_password(password_str.clone());
-            }
-        }
-
-        // Update credentials if both username and password are set
-        if let (Some(username), Some(password)) = (self.config.username(), self.config.password()) {
-            self.credentials = Some(BasicAuthCredentials::new(
-                username.clone(),
-                password.clone(),
-            ));
-        }
-    }
-
-    /// Get the version of this extension
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    /// Close the extension and release any resources
-    pub fn close(&mut self) {
-        self.credentials = None;
-    }
-}
-
-impl Default for BasicAuthExtension {
-    fn default() -> Self {
-        Self::new()
     }
 }

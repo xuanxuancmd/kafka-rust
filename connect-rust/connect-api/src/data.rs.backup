@@ -1,0 +1,2031 @@
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::connector_types::ConnectRecord;
+use crate::error::{ConnectException, DataException};
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+
+/// Schema type enumeration defining the basic data types supported by Connect schemas.
+pub type SchemaType = Type;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Type {
+    /// 8-bit signed integer
+    Int8,
+    /// 16-bit signed integer
+    Int16,
+    /// 32-bit signed integer
+    Int32,
+    /// 64-bit signed integer
+    Int64,
+    /// 32-bit floating point
+    Float32,
+    /// 64-bit floating point
+    Float64,
+    /// Boolean
+    Boolean,
+    /// String
+    String,
+    /// Bytes
+    Bytes,
+    /// Array
+    Array,
+    /// Map
+    Map,
+    /// Struct
+    Struct,
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Int8 => write!(f, "INT8"),
+            Type::Int16 => write!(f, "INT16"),
+            Type::Int32 => write!(f, "INT32"),
+            Type::Int64 => write!(f, "INT64"),
+            Type::Float32 => write!(f, "FLOAT32"),
+            Type::Float64 => write!(f, "FLOAT64"),
+            Type::Boolean => write!(f, "BOOLEAN"),
+            Type::String => write!(f, "STRING"),
+            Type::Bytes => write!(f, "BYTES"),
+            Type::Array => write!(f, "ARRAY"),
+            Type::Map => write!(f, "MAP"),
+            Type::Struct => write!(f, "STRUCT"),
+        }
+    }
+}
+
+/// Schema trait defining the structure of data in Kafka Connect.
+pub trait Schema: fmt::Debug + Send + Sync {
+    /// Returns the type of the schema.
+    fn type_(&self) -> Type;
+
+    /// Returns whether the schema is optional.
+    fn is_optional(&self) -> bool;
+
+    /// Returns the default value for the schema.
+    fn default_value(&self) -> Option<&dyn Any>;
+
+    /// Returns the name of the schema.
+    fn name(&self) -> Option<&str>;
+
+    /// Returns the version of the schema.
+    fn version(&self) -> Option<i32>;
+
+    /// Returns the documentation string for the schema.
+    fn doc(&self) -> Option<&str>;
+
+    /// Returns a map of schema parameters.
+    fn parameters(&self) -> Option<&HashMap<String, String>>;
+
+    /// Returns a list of fields if the schema is a STRUCT type.
+    fn fields(&self) -> Result<Vec<Field>, DataException>;
+
+    /// Returns a specific field by name if the schema is a STRUCT type.
+    fn field(&self, field_name: &str) -> Result<Field, DataException>;
+
+    /// Returns the key schema if the schema is a MAP type.
+    fn key_schema(&self) -> Result<Arc<dyn Schema>, DataException>;
+
+    /// Returns the value schema if the schema is a MAP or ARRAY type.
+    fn value_schema(&self) -> Result<Arc<dyn Schema>, DataException>;
+
+    /// Validates if a given value conforms to this schema.
+    fn validate_value(&self, value: &dyn Any) -> Result<(), DataException>;
+}
+
+/// Field represents a field within a STRUCT schema.
+#[derive(Debug, Clone)]
+pub struct Field {
+    index: i32,
+    name: String,
+    schema: Arc<ConnectSchema>,
+    doc: Option<String>,
+}
+
+impl PartialEq for Field {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.name == other.name
+    }
+}
+
+impl Eq for Field {}
+
+impl Field {
+    pub fn new(index: i32, name: String, schema: Arc<ConnectSchema>) -> Self {
+        Field {
+            index,
+            name,
+            schema,
+            doc: None,
+        }
+    }
+
+    pub fn with_doc(mut self, doc: String) -> Self {
+        self.doc = Some(doc);
+        self
+    }
+
+    pub fn index(&self) -> i32 {
+        self.index
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn schema(&self) -> Arc<ConnectSchema> {
+        Arc::clone(&self.schema)
+    }
+
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
+    }
+}
+
+/// ConnectSchema is the primary implementation of the Schema interface.
+#[derive(Debug)]
+pub struct ConnectSchema {
+    type_: Type,
+    optional: bool,
+    default_value: Option<Box<dyn Any + Send + Sync>>,
+    fields: Option<Vec<Field>>,
+    fields_by_name: Option<HashMap<String, Field>>,
+    key_schema: Option<Arc<ConnectSchema>>,
+    value_schema: Option<Arc<ConnectSchema>>,
+    name: Option<String>,
+    version: Option<i32>,
+    doc: Option<String>,
+    parameters: Option<HashMap<String, String>>,
+}
+
+impl Clone for ConnectSchema {
+    fn clone(&self) -> Self {
+        ConnectSchema {
+            type_: self.type_,
+            optional: self.optional,
+            default_value: None, // Cannot clone Box<dyn Any>
+            fields: self.fields.clone(),
+            fields_by_name: self.fields_by_name.clone(),
+            key_schema: self.key_schema.clone(),
+            value_schema: self.value_schema.clone(),
+            name: self.name.clone(),
+            version: self.version,
+            doc: self.doc.clone(),
+            parameters: self.parameters.clone(),
+        }
+    }
+}
+
+impl ConnectSchema {
+    /// Creates a new primitive schema with the given type.
+    pub fn new(type_: Type) -> Self {
+        ConnectSchema {
+            type_,
+            optional: false,
+            default_value: None,
+            fields: None,
+            fields_by_name: None,
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    /// Creates a new array schema.
+    pub fn array(value_schema: Arc<ConnectSchema>) -> Self {
+        ConnectSchema {
+            type_: Type::Array,
+            optional: false,
+            default_value: None,
+            fields: None,
+            fields_by_name: None,
+            key_schema: None,
+            value_schema: Some(value_schema),
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    /// Creates a new map schema.
+    pub fn map(key_schema: Arc<ConnectSchema>, value_schema: Arc<ConnectSchema>) -> Self {
+        ConnectSchema {
+            type_: Type::Map,
+            optional: false,
+            default_value: None,
+            fields: None,
+            fields_by_name: None,
+            key_schema: Some(key_schema),
+            value_schema: Some(value_schema),
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    /// Creates a new struct schema.
+    pub fn struct_(fields: Vec<Field>) -> Self {
+        let mut fields_by_name = HashMap::new();
+        for field in &fields {
+            fields_by_name.insert(field.name().to_string(), field.clone());
+        }
+
+        ConnectSchema {
+            type_: Type::Struct,
+            optional: false,
+            default_value: None,
+            fields: Some(fields),
+            fields_by_name: Some(fields_by_name),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn with_optional(mut self, optional: bool) -> Self {
+        self.optional = optional;
+        self
+    }
+
+    pub fn with_default_value(mut self, value: Box<dyn Any + Send + Sync>) -> Self {
+        self.default_value = Some(value);
+        self
+    }
+
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
+
+    pub fn with_version(mut self, version: i32) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    pub fn with_doc(mut self, doc: String) -> Self {
+        self.doc = Some(doc);
+        self
+    }
+
+    pub fn with_parameters(mut self, parameters: HashMap<String, String>) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
+    /// Validates a value against a schema.
+    pub fn validate_value_static(
+        schema: &dyn Schema,
+        value: &dyn Any,
+    ) -> Result<(), DataException> {
+        if value.is::<()>() {
+            if !schema.is_optional() {
+                return Err(DataException::new(
+                    "Value cannot be null for non-optional schema".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
+        let type_ = schema.type_();
+        match type_ {
+            Type::Int8 => {
+                if !value.is::<i8>() {
+                    return Err(DataException::new(format!(
+                        "Expected i8 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Int16 => {
+                if !value.is::<i16>() {
+                    return Err(DataException::new(format!(
+                        "Expected i16 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Int32 => {
+                if !value.is::<i32>() {
+                    return Err(DataException::new(format!(
+                        "Expected i32 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Int64 => {
+                if !value.is::<i64>() {
+                    return Err(DataException::new(format!(
+                        "Expected i64 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Float32 => {
+                if !value.is::<f32>() {
+                    return Err(DataException::new(format!(
+                        "Expected f32 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Float64 => {
+                if !value.is::<f64>() {
+                    return Err(DataException::new(format!(
+                        "Expected f64 for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Boolean => {
+                if !value.is::<bool>() {
+                    return Err(DataException::new(format!(
+                        "Expected bool for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::String => {
+                if !value.is::<String>() {
+                    return Err(DataException::new(format!(
+                        "Expected String for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Bytes => {
+                if !value.is::<Vec<u8>>() {
+                    return Err(DataException::new(format!(
+                        "Expected Vec<u8> for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Array => {
+                if !value.is::<Vec<Box<dyn Any + Send + Sync>>>() {
+                    return Err(DataException::new(format!(
+                        "Expected Vec for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Map => {
+                if !value.is::<HashMap<String, Box<dyn Any + Send + Sync>>>() {
+                    return Err(DataException::new(format!(
+                        "Expected HashMap for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+            Type::Struct => {
+                if !value.is::<Struct>() {
+                    return Err(DataException::new(format!(
+                        "Expected Struct for schema type {}, got different type",
+                        type_
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Schema for ConnectSchema {
+    fn type_(&self) -> Type {
+        self.type_
+    }
+
+    fn is_optional(&self) -> bool {
+        self.optional
+    }
+
+    fn default_value(&self) -> Option<&dyn Any> {
+        self.default_value.as_ref().map(|v| v.as_ref() as &dyn Any)
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn version(&self) -> Option<i32> {
+        self.version
+    }
+
+    fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
+    }
+
+    fn parameters(&self) -> Option<&HashMap<String, String>> {
+        self.parameters.as_ref()
+    }
+
+    fn fields(&self) -> Result<Vec<Field>, DataException> {
+        if self.type_ != Type::Struct {
+            return Err(DataException::new(format!(
+                "Cannot get fields for schema of type {}",
+                self.type_
+            )));
+        }
+        self.fields
+            .clone()
+            .ok_or_else(|| DataException::new("Fields not available for STRUCT schema".to_string()))
+    }
+
+    fn field(&self, field_name: &str) -> Result<Field, DataException> {
+        if self.type_ != Type::Struct {
+            return Err(DataException::new(format!(
+                "Cannot get field for schema of type {}",
+                self.type_
+            )));
+        }
+        self.fields_by_name
+            .as_ref()
+            .and_then(|map| map.get(field_name).cloned())
+            .ok_or_else(|| {
+                DataException::new(format!("Field '{}' not found in schema", field_name))
+            })
+    }
+
+    fn key_schema(&self) -> Result<Arc<dyn Schema>, DataException> {
+        if self.type_ != Type::Map {
+            return Err(DataException::new(format!(
+                "Cannot get key schema for schema of type {}",
+                self.type_
+            )));
+        }
+        self.key_schema
+            .as_ref()
+            .map(|s| Arc::clone(s) as Arc<dyn Schema>)
+            .ok_or_else(|| {
+                DataException::new("Key schema not available for MAP schema".to_string())
+            })
+    }
+
+    fn value_schema(&self) -> Result<Arc<dyn Schema>, DataException> {
+        if self.type_ != Type::Array && self.type_ != Type::Map {
+            return Err(DataException::new(format!(
+                "Cannot get value schema for schema of type {}",
+                self.type_
+            )));
+        }
+        self.value_schema
+            .as_ref()
+            .map(|s| Arc::clone(s) as Arc<dyn Schema>)
+            .ok_or_else(|| {
+                DataException::new("Value schema not available for ARRAY/MAP schema".to_string())
+            })
+    }
+
+    fn validate_value(&self, value: &dyn Any) -> Result<(), DataException> {
+        ConnectSchema::validate_value_static(self, value)
+    }
+}
+
+/// SchemaBuilder is a utility class for constructing Schema objects in a fluent way.
+pub struct SchemaBuilder {
+    type_: Option<Type>,
+    optional: bool,
+    default_value: Option<Box<dyn Any + Send + Sync>>,
+    fields: Vec<Field>,
+    key_schema: Option<Arc<ConnectSchema>>,
+    value_schema: Option<Arc<ConnectSchema>>,
+    name: Option<String>,
+    version: Option<i32>,
+    doc: Option<String>,
+    parameters: Option<HashMap<String, String>>,
+}
+
+impl SchemaBuilder {
+    pub fn new() -> Self {
+        SchemaBuilder {
+            type_: None,
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn r#struct() -> Self {
+        SchemaBuilder {
+            type_: None,
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn struct_() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Struct),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn int8() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Int8),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn int16() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Int16),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn int32() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Int32),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn int64() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Int64),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn float32() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Float32),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn float64() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Float64),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn boolean() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Boolean),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn string() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::String),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn bytes() -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Bytes),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: None,
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn array(value_schema: Arc<ConnectSchema>) -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Array),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: None,
+            value_schema: Some(value_schema),
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn map(key_schema: Arc<ConnectSchema>, value_schema: Arc<ConnectSchema>) -> Self {
+        SchemaBuilder {
+            type_: Some(Type::Map),
+            optional: false,
+            default_value: None,
+            fields: Vec::new(),
+            key_schema: Some(key_schema),
+            value_schema: Some(value_schema),
+            name: None,
+            version: None,
+            doc: None,
+            parameters: None,
+        }
+    }
+
+    pub fn name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
+
+    pub fn optional(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+
+    pub fn required(mut self) -> Self {
+        self.optional = false;
+        self
+    }
+
+    pub fn version(mut self, version: i32) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    pub fn doc(mut self, doc: String) -> Self {
+        self.doc = Some(doc);
+        self
+    }
+
+    pub fn parameter(mut self, key: String, value: String) -> Self {
+        if self.parameters.is_none() {
+            self.parameters = Some(HashMap::new());
+        }
+        self.parameters.as_mut().unwrap().insert(key, value);
+        self
+    }
+
+    pub fn parameters(mut self, params: HashMap<String, String>) -> Self {
+        self.parameters = Some(params);
+        self
+    }
+
+    pub fn field(mut self, name: String, schema: Arc<ConnectSchema>) -> Self {
+        let index = self.fields.len() as i32;
+        self.fields.push(Field::new(index, name, schema));
+        self
+    }
+
+    pub fn field_with_doc(mut self, name: String, schema: Arc<ConnectSchema>, doc: String) -> Self {
+        let index = self.fields.len() as i32;
+        self.fields
+            .push(Field::new(index, name, schema).with_doc(doc));
+        self
+    }
+
+    pub fn build(self) -> Result<Arc<ConnectSchema>, ConnectException> {
+        let type_ = self
+            .type_
+            .ok_or_else(|| ConnectException::new("Schema type not specified"))?;
+
+        let schema = match type_ {
+            Type::Struct => {
+                let mut schema = ConnectSchema::struct_(self.fields);
+                schema.optional = self.optional;
+                schema.name = self.name;
+                schema.version = self.version;
+                schema.doc = self.doc;
+                schema.parameters = self.parameters;
+                schema
+            }
+            Type::Array => {
+                let value_schema = self
+                    .value_schema
+                    .ok_or_else(|| ConnectException::new("Value schema required for ARRAY"))?;
+                let mut schema = ConnectSchema::array(value_schema);
+                schema.optional = self.optional;
+                schema.name = self.name;
+                schema.version = self.version;
+                schema.doc = self.doc;
+                schema.parameters = self.parameters;
+                schema
+            }
+            Type::Map => {
+                let key_schema = self
+                    .key_schema
+                    .ok_or_else(|| ConnectException::new("Key schema required for MAP"))?;
+                let value_schema = self
+                    .value_schema
+                    .ok_or_else(|| ConnectException::new("Value schema required for MAP"))?;
+                let mut schema = ConnectSchema::map(key_schema, value_schema);
+                schema.optional = self.optional;
+                schema.name = self.name;
+                schema.version = self.version;
+                schema.doc = self.doc;
+                schema.parameters = self.parameters;
+                schema
+            }
+            _ => {
+                let mut schema = ConnectSchema::new(type_);
+                schema.optional = self.optional;
+                schema.name = self.name;
+                schema.version = self.version;
+                schema.doc = self.doc;
+                schema.parameters = self.parameters;
+                schema
+            }
+        };
+
+        Ok(Arc::new(schema))
+    }
+}
+
+/// Struct represents an instance of a STRUCT schema.
+#[derive(Debug)]
+pub struct Struct {
+    schema: Arc<ConnectSchema>,
+    values: HashMap<String, Box<dyn Any + Send + Sync>>,
+}
+
+impl Clone for Struct {
+    fn clone(&self) -> Self {
+        Struct {
+            schema: Arc::clone(&self.schema),
+            values: HashMap::new(), // Cannot clone Box<dyn Any>
+        }
+    }
+}
+
+impl Struct {
+    pub fn new(schema: Arc<ConnectSchema>) -> Result<Self, DataException> {
+        if schema.type_() != Type::Struct {
+            return Err(DataException::new(format!(
+                "Cannot create Struct with schema of type {}",
+                schema.type_()
+            )));
+        }
+        Ok(Struct {
+            schema,
+            values: HashMap::new(),
+        })
+    }
+
+    pub fn schema(&self) -> Arc<ConnectSchema> {
+        Arc::clone(&self.schema)
+    }
+
+    pub fn put(
+        &mut self,
+        field_name: &str,
+        value: Box<dyn Any + Send + Sync>,
+    ) -> Result<(), DataException> {
+        let field = self.schema.field(field_name)?;
+        field.schema().validate_value(value.as_ref())?;
+        self.values.insert(field_name.to_string(), value);
+        Ok(())
+    }
+
+    pub fn put_without_validation(&mut self, field_name: &str, value: Box<dyn Any + Send + Sync>) {
+        self.values.insert(field_name.to_string(), value);
+    }
+
+    pub fn get(&self, field_name: &str) -> Option<&dyn Any> {
+        self.values.get(field_name).map(|v| v.as_ref() as &dyn Any)
+    }
+
+    pub fn get_int8(&self, field_name: &str) -> Result<i8, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<i8>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an i8", field_name)))
+    }
+
+    pub fn get_int16(&self, field_name: &str) -> Result<i16, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<i16>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an i16", field_name)))
+    }
+
+    pub fn get_int32(&self, field_name: &str) -> Result<i32, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<i32>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an i32", field_name)))
+    }
+
+    pub fn get_int64(&self, field_name: &str) -> Result<i64, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<i64>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an i64", field_name)))
+    }
+
+    pub fn get_float32(&self, field_name: &str) -> Result<f32, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<f32>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an f32", field_name)))
+    }
+
+    pub fn get_float64(&self, field_name: &str) -> Result<f64, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<f64>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not an f64", field_name)))
+    }
+
+    pub fn get_boolean(&self, field_name: &str) -> Result<bool, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<bool>())
+            .copied()
+            .ok_or_else(|| DataException::new(format!("Field {} is not a bool", field_name)))
+    }
+
+    pub fn get_string(&self, field_name: &str) -> Result<String, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<String>())
+            .cloned()
+            .ok_or_else(|| DataException::new(format!("Field {} is not a String", field_name)))
+    }
+
+    pub fn get_bytes(&self, field_name: &str) -> Result<Vec<u8>, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<Vec<u8>>())
+            .cloned()
+            .ok_or_else(|| DataException::new(format!("Field {} is not Vec<u8>", field_name)))
+    }
+
+    pub fn validate(&self) -> Result<(), DataException> {
+        for field in self.schema.fields()? {
+            if let Some(value) = self.get(field.name()) {
+                field.schema().validate_value(value)?;
+            } else if !field.schema().is_optional() {
+                return Err(DataException::new(format!(
+                    "Required field {} is missing",
+                    field.name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn equals(&self, other: &Struct) -> bool {
+        if Arc::ptr_eq(&self.schema, &other.schema) {
+            return true;
+        }
+
+        if self.schema.type_() != other.schema.type_() {
+            return false;
+        }
+
+        // Simple comparison: check same fields exist
+        let self_fields = self.values.keys().collect::<std::collections::HashSet<_>>();
+        let other_fields = other
+            .values
+            .keys()
+            .collect::<std::collections::HashSet<_>>();
+        self_fields == other_fields
+    }
+}
+
+/// SchemaAndValue is a simple container that holds both a Schema and its corresponding value.
+#[derive(Debug)]
+pub struct SchemaAndValue {
+    schema: Option<Arc<ConnectSchema>>,
+    value: Option<Box<dyn Any + Send + Sync>>,
+}
+
+impl AsRef<Self> for SchemaAndValue {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+impl fmt::Display for SchemaAndValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.value {
+            Some(v) => {
+                if let Some(s) = v.downcast_ref::<String>() {
+                    write!(f, "{}", s)
+                } else if let Some(i) = v.downcast_ref::<i64>() {
+                    write!(f, "{}", i)
+                } else if let Some(i) = v.downcast_ref::<i32>() {
+                    write!(f, "{}", i)
+                } else if let Some(b) = v.downcast_ref::<bool>() {
+                    write!(f, "{}", b)
+                } else {
+                    write!(f, "{{unknown type}}")
+                }
+            }
+            None => write!(f, "null"),
+        }
+    }
+}
+
+impl Clone for SchemaAndValue {
+    fn clone(&self) -> Self {
+        SchemaAndValue {
+            schema: self.schema.clone(),
+            value: None, // Cannot clone Box<dyn Any>
+        }
+    }
+}
+
+impl SchemaAndValue {
+    pub fn new(
+        schema: Option<Arc<ConnectSchema>>,
+        value: Option<Box<dyn Any + Send + Sync>>,
+    ) -> Self {
+        SchemaAndValue { schema, value }
+    }
+
+    pub fn schema(&self) -> Option<Arc<ConnectSchema>> {
+        self.schema.clone()
+    }
+
+    pub fn schema_as_ref(&self) -> Option<&dyn Schema> {
+        self.schema.as_ref().map(|s| s.as_ref() as &dyn Schema)
+    }
+
+    pub fn value(&self) -> Option<&dyn Any> {
+        self.value.as_ref().map(|v| v.as_ref() as &dyn Any)
+    }
+
+    pub fn with_schema(mut self, schema: Arc<ConnectSchema>) -> Self {
+        self.schema = Some(schema);
+        self
+    }
+
+    pub fn with_value(mut self, value: Box<dyn Any + Send + Sync>) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    /// Convert value to serde_json::Value
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match &self.value {
+            Some(v) => {
+                if let Some(s) = v.downcast_ref::<String>() {
+                    serde_json::Value::String(s.clone())
+                } else if let Some(i) = v.downcast_ref::<i64>() {
+                    serde_json::Value::Number((*i).into())
+                } else if let Some(i) = v.downcast_ref::<i32>() {
+                    serde_json::Value::Number((*i).into())
+                } else if let Some(b) = v.downcast_ref::<bool>() {
+                    serde_json::Value::Bool(*b)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            None => serde_json::Value::Null,
+        }
+    }
+}
+
+/// Values is a utility for converting Connect values from one form to another.
+pub struct Values;
+
+impl Values {
+    pub fn convert_to_boolean(
+        _schema: &dyn Schema,
+        value: &dyn Any,
+    ) -> Result<bool, DataException> {
+        value
+            .downcast_ref::<bool>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to boolean".to_string()))
+    }
+
+    pub fn convert_to_byte(_schema: &dyn Schema, value: &dyn Any) -> Result<i8, DataException> {
+        value
+            .downcast_ref::<i8>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to byte".to_string()))
+    }
+
+    pub fn convert_to_short(_schema: &dyn Schema, value: &dyn Any) -> Result<i16, DataException> {
+        value
+            .downcast_ref::<i16>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to short".to_string()))
+    }
+
+    pub fn convert_to_integer(_schema: &dyn Schema, value: &dyn Any) -> Result<i32, DataException> {
+        value
+            .downcast_ref::<i32>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to integer".to_string()))
+    }
+
+    pub fn convert_to_long(_schema: &dyn Schema, value: &dyn Any) -> Result<i64, DataException> {
+        value
+            .downcast_ref::<i64>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to long".to_string()))
+    }
+
+    pub fn convert_to_float(_schema: &dyn Schema, value: &dyn Any) -> Result<f32, DataException> {
+        value
+            .downcast_ref::<f32>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to float".to_string()))
+    }
+
+    pub fn convert_to_double(_schema: &dyn Schema, value: &dyn Any) -> Result<f64, DataException> {
+        value
+            .downcast_ref::<f64>()
+            .copied()
+            .ok_or_else(|| DataException::new("Cannot convert value to double".to_string()))
+    }
+
+    pub fn convert_to_string(
+        _schema: &dyn Schema,
+        value: &dyn Any,
+    ) -> Result<String, DataException> {
+        value
+            .downcast_ref::<String>()
+            .cloned()
+            .ok_or_else(|| DataException::new("Cannot convert value to string".to_string()))
+    }
+
+    pub fn infer_schema(_value: &dyn Any) -> Option<Arc<ConnectSchema>> {
+        // Simplified implementation - in real code would inspect the value type
+        None
+    }
+
+    pub fn parse_string(_value: &str) -> Result<SchemaAndValue, DataException> {
+        // Simplified implementation - in real code would parse the string
+        Ok(SchemaAndValue::new(None, None))
+    }
+}
+
+/// SchemaProjector trait for projecting schemas.
+pub trait SchemaProjector: Send + Sync {
+    fn project_schema(&self, schema: &dyn Schema) -> Result<Arc<dyn Schema>, DataException>;
+
+    fn project_value(
+        &self,
+        value: &dyn Any,
+        schema: &dyn Schema,
+    ) -> Result<Box<dyn Any + Send + Sync>, DataException>;
+}
+
+/// Date logical type.
+pub struct Date;
+
+impl Date {
+    pub const LOGICAL_NAME: &'static str = "org.apache.kafka.connect.data.Date";
+    pub const MILLIS_PER_DAY: i64 = 86400000;
+
+    pub fn schema() -> Arc<ConnectSchema> {
+        Arc::new(
+            ConnectSchema::new(Type::Int32)
+                .with_name(Self::LOGICAL_NAME.to_string())
+                .with_version(1),
+        )
+    }
+
+    pub fn from_logical(value: i32) -> i32 {
+        value
+    }
+
+    pub fn to_logical(value: i32) -> Result<i32, DataException> {
+        Ok(value)
+    }
+}
+
+/// Time logical type.
+pub struct Time;
+
+impl Time {
+    pub const LOGICAL_NAME: &'static str = "org.apache.kafka.connect.data.Time";
+
+    pub fn schema() -> Arc<ConnectSchema> {
+        Arc::new(
+            ConnectSchema::new(Type::Int32)
+                .with_name(Self::LOGICAL_NAME.to_string())
+                .with_version(1),
+        )
+    }
+
+    pub fn from_logical(value: i32) -> i32 {
+        value
+    }
+
+    pub fn to_logical(value: i32) -> Result<i32, DataException> {
+        Ok(value)
+    }
+}
+
+/// Timestamp logical type.
+pub struct Timestamp;
+
+impl Timestamp {
+    pub const LOGICAL_NAME: &'static str = "org.apache.kafka.connect.data.Timestamp";
+
+    pub fn schema() -> Arc<ConnectSchema> {
+        Arc::new(
+            ConnectSchema::new(Type::Int64)
+                .with_name(Self::LOGICAL_NAME.to_string())
+                .with_version(1),
+        )
+    }
+
+    pub fn from_logical(value: i64) -> i64 {
+        value
+    }
+
+    pub fn to_logical(value: i64) -> Result<i64, DataException> {
+        Ok(value)
+    }
+}
+
+/// Decimal logical type.
+pub struct Decimal;
+
+impl Decimal {
+    pub const LOGICAL_NAME: &'static str = "org.apache.kafka.connect.data.Decimal";
+
+    pub fn schema(scale: i32) -> Arc<ConnectSchema> {
+        let mut params = HashMap::new();
+        params.insert("scale".to_string(), scale.to_string());
+
+        Arc::new(
+            ConnectSchema::new(Type::Bytes)
+                .with_name(Self::LOGICAL_NAME.to_string())
+                .with_version(1)
+                .with_parameters(params),
+        )
+    }
+
+    pub fn from_logical(_value: &Vec<u8>) -> Vec<u8> {
+        // In real implementation, would convert BigDecimal to bytes
+        vec![]
+    }
+
+    pub fn to_logical(_value: &Vec<u8>, _scale: i32) -> Result<Vec<u8>, DataException> {
+        // In real implementation, would convert bytes to BigDecimal
+        Ok(vec![])
+    }
+}
+
+// ============================================================================================
+// Header and Headers - representing record headers in Kafka Connect
+// ============================================================================================
+
+/// Header trait representing a single header in a Kafka record
+pub trait Header: Send + Sync {
+    /// Returns the header's key
+    fn key(&self) -> &str;
+
+    /// Returns the schema of the header's value
+    fn schema(&self) -> Arc<dyn Schema>;
+
+    /// Returns the header's value (cloned)
+    fn value(&self) -> Arc<dyn Any + Send + Sync>;
+
+    /// Returns a new Header with the specified schema and value
+    fn with(&self, schema: Arc<dyn Schema>, value: Arc<dyn Any + Send + Sync>) -> Box<dyn Header>;
+
+    /// Returns a new Header with the specified key
+    fn rename(&self, key: &str) -> Box<dyn Header>;
+}
+
+/// Concrete implementation of Header
+pub struct ConcreteHeader {
+    key: String,
+    schema: Arc<dyn Schema>,
+    value: Arc<dyn Any + Send + Sync>,
+}
+
+impl ConcreteHeader {
+    pub fn new(key: String, schema: Arc<dyn Schema>, value: Arc<dyn Any + Send + Sync>) -> Self {
+        Self { key, schema, value }
+    }
+}
+
+impl Header for ConcreteHeader {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn schema(&self) -> Arc<dyn Schema> {
+        self.schema.clone()
+    }
+
+    fn value(&self) -> Arc<dyn Any + Send + Sync> {
+        self.value.clone()
+    }
+
+    fn with(&self, schema: Arc<dyn Schema>, value: Arc<dyn Any + Send + Sync>) -> Box<dyn Header> {
+        Box::new(ConcreteHeader::new(self.key.clone(), schema, value))
+    }
+
+    fn rename(&self, key: &str) -> Box<dyn Header> {
+        Box::new(ConcreteHeader::new(
+            key.to_string(),
+            self.schema.clone(),
+            self.value.clone(),
+        ))
+    }
+}
+
+impl Clone for ConcreteHeader {
+    fn clone(&self) -> Self {
+        ConcreteHeader {
+            key: self.key.clone(),
+            schema: self.schema.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+/// Headers trait representing a collection of headers
+pub trait Headers: Send + Sync {
+    /// Returns the number of headers
+    fn size(&self) -> usize;
+
+    /// Returns true if there are no headers
+    fn is_empty(&self) -> bool;
+
+    /// Returns all headers with the given key
+    fn all_with_name(&self, key: &str) -> Vec<Box<dyn Header>>;
+
+    /// Returns the last header with the given key
+    fn last_with_name(&self, key: &str) -> Option<Box<dyn Header>>;
+
+    /// Adds a header
+    fn add(&mut self, header: Box<dyn Header>);
+
+    /// Removes headers with the given keys and returns new headers
+    fn remove_headers(&mut self, keys: &[String]) -> Box<dyn Headers>;
+
+    /// Removes a header by key and returns new headers
+    fn remove(&mut self, key: &str) -> Box<dyn Headers>;
+
+    /// Returns a duplicate of the headers
+    fn duplicate(&self) -> Box<dyn Headers>;
+
+    /// Returns an iterator over the headers
+    fn iter(&self) -> Box<dyn Iterator<Item = &dyn Header> + '_>;
+}
+
+/// Concrete implementation of Headers
+pub struct ConcreteHeaders {
+    headers: Vec<Box<dyn Header>>,
+}
+
+impl ConcreteHeaders {
+    pub fn new() -> Self {
+        Self {
+            headers: Vec::new(),
+        }
+    }
+}
+
+impl Default for ConcreteHeaders {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for ConcreteHeaders {
+    fn clone(&self) -> Self {
+        let mut new_headers = ConcreteHeaders::new();
+        for h in &self.headers {
+            // Clone the header value
+            let schema = h.schema();
+            let value = h.value();
+            new_headers.add(h.with(schema, value));
+        }
+        new_headers
+    }
+}
+
+impl Headers for ConcreteHeaders {
+    fn size(&self) -> usize {
+        self.headers.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.headers.is_empty()
+    }
+
+    fn all_with_name(&self, key: &str) -> Vec<Box<dyn Header>> {
+        self.headers
+            .iter()
+            .filter(|h| h.key() == key)
+            .map(|h| h.with(h.schema(), h.value().clone()))
+            .collect()
+}
+
+// ============================================================================================
+// SourceRecord - record from a source system
+// ============================================================================================
+
+/// SourceRecord represents a record read from a source system
+pub struct SourceRecord {
+    topic: String,
+    kafka_partition: Option<i32>,
+    key_schema: Option<Arc<dyn Schema>>,
+    key: Option<Arc<dyn Any + Send + Sync>>,
+    value_schema: Option<Arc<dyn Schema>>,
+    value: Option<Arc<dyn Any + Send + Sync>>,
+    timestamp: Option<i64>,
+    headers: Box<dyn Headers>,
+    source_partition: HashMap<String, i64>,
+    source_offset: HashMap<String, i64>,
+}
+
+impl SourceRecord {
+    pub fn new(
+        topic: String,
+        source_partition: HashMap<String, i64>,
+        source_offset: HashMap<String, i64>,
+    ) -> Self {
+        Self {
+            topic,
+            kafka_partition: None,
+            key_schema: None,
+            key: None,
+            value_schema: None,
+            value: None,
+            timestamp: None,
+            headers: Box::new(ConcreteHeaders::new()),
+            source_partition,
+            source_offset,
+        }
+    }
+
+    pub fn builder() -> SourceRecordBuilder {
+        SourceRecordBuilder::new()
+    }
+
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub fn kafka_partition(&self) -> Option<i32> {
+        self.kafka_partition
+    }
+
+    pub fn key_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.key_schema.clone()
+    }
+
+    pub fn key(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.key.clone()
+    }
+
+    pub fn value_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.value_schema.clone()
+    }
+
+    pub fn value(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.value.clone()
+    }
+
+    pub fn timestamp(&self) -> Option<i64> {
+        self.timestamp
+    }
+
+    pub fn headers(&self) -> &dyn Headers {
+        self.headers.as_ref()
+    }
+
+    pub fn source_partition(&self) -> &HashMap<String, i64> {
+        &self.source_partition
+    }
+
+    pub fn source_offset(&self) -> &HashMap<String, i64> {
+        &self.source_offset
+    }
+}
+
+impl ConnectRecord<SourceRecord> for SourceRecord {
+    fn topic(&self) -> &str {
+        self.topic()
+    }
+
+    fn kafka_partition(&self) -> Option<i32> {
+        self.kafka_partition()
+    }
+
+    fn key_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.key_schema()
+    }
+
+    fn key(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.key()
+    }
+
+    fn value_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.value_schema()
+    }
+
+    fn value(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.value()
+    }
+
+    fn timestamp(&self) -> Option<i64> {
+        self.timestamp()
+    }
+
+    fn headers(&self) -> &dyn Headers {
+        self.headers()
+    }
+
+    fn new_record(
+        self,
+        topic: Option<&str>,
+        partition: Option<i32>,
+        key_schema: Option<Arc<dyn Schema>>,
+        key: Option<Arc<dyn Any + Send + Sync>>,
+        value_schema: Option<Arc<dyn Schema>>,
+        value: Option<Arc<dyn Any + Send + Sync>>,
+        timestamp: Option<i64>,
+        headers: Option<Arc<dyn Headers>>,
+    ) -> SourceRecord {
+        let headers_box = if let Some(h) = headers {
+            h.duplicate()
+        } else {
+            Box::new(ConcreteHeaders::new())
+        };
+
+        SourceRecord {
+            topic: topic.unwrap_or(&self.topic).to_string(),
+            kafka_partition: partition.or(self.kafka_partition),
+            key_schema: key_schema.or(self.key_schema),
+            key: key.or(self.key),
+            value_schema: value_schema.or(self.value_schema),
+            value: value.or(self.value),
+            timestamp: timestamp.or(self.timestamp),
+            headers: headers_box,
+            source_partition: self.source_partition,
+            source_offset: self.source_offset,
+        }
+    }
+}
+
+/// Builder for SourceRecord
+pub struct SourceRecordBuilder {
+    topic: Option<String>,
+    kafka_partition: Option<i32>,
+    key_schema: Option<Arc<dyn Schema>>,
+    key: Option<Arc<dyn Any + Send + Sync>>,
+    value_schema: Option<Arc<dyn Schema>>,
+    value: Option<Arc<dyn Any + Send + Sync>>,
+    timestamp: Option<i64>,
+    headers: Option<Box<dyn Headers>>,
+    source_partition: HashMap<String, i64>,
+    source_offset: HashMap<String, i64>,
+}
+
+impl SourceRecordBuilder {
+    pub fn new() -> Self {
+        Self {
+            topic: None,
+            kafka_partition: None,
+            key_schema: None,
+            key: None,
+            value_schema: None,
+            value: None,
+            timestamp: None,
+            headers: None,
+            source_partition: HashMap::new(),
+            source_offset: HashMap::new(),
+        }
+    }
+
+    pub fn topic(mut self, topic: String) -> Self {
+        self.topic = Some(topic);
+        self
+    }
+
+    pub fn partition(mut self, partition: Option<i32>) -> Self {
+        self.kafka_partition = partition;
+        self
+    }
+
+    pub fn key_schema(mut self, schema: Arc<dyn Schema>) -> Self {
+        self.key_schema = Some(schema);
+        self
+    }
+
+    pub fn key(mut self, key: Arc<dyn Any + Send + Sync>) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn value_schema(mut self, schema: Arc<dyn Schema>) -> Self {
+        self.value_schema = Some(schema);
+        self
+    }
+
+    pub fn value(mut self, value: Arc<dyn Any + Send + Sync>) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub fn timestamp(mut self, timestamp: i64) -> Self {
+        self.timestamp = Some(timestamp);
+        self
+    }
+
+    pub fn headers(mut self, headers: Box<dyn Headers>) -> Self {
+        self.headers = Some(headers);
+        self
+    }
+
+    pub fn source_partition(mut self, partition: HashMap<String, i64>) -> Self {
+        self.source_partition = partition;
+        self
+    }
+
+    pub fn source_offset(mut self, offset: HashMap<String, i64>) -> Self {
+        self.source_offset = offset;
+        self
+    }
+
+    pub fn build(self) -> SourceRecord {
+        SourceRecord {
+            topic: self.topic.unwrap_or_default(),
+            kafka_partition: self.kafka_partition,
+            key_schema: self.key_schema,
+            key: self.key,
+            value_schema: self.value_schema,
+            value: self.value,
+            timestamp: self.timestamp,
+            headers: self
+                .headers
+                .unwrap_or_else(|| Box::new(ConcreteHeaders::new())),
+            source_partition: self.source_partition,
+            source_offset: self.source_offset,
+        }
+    }
+}
+
+impl Default for SourceRecordBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================================
+// SinkRecord - record destined for a sink system
+// ============================================================================================
+
+/// SinkRecord represents a record read from Kafka and destined for a sink system
+pub struct SinkRecord {
+    topic: String,
+    kafka_partition: i32,
+    key_schema: Option<Arc<dyn Schema>>,
+    key: Option<Arc<dyn Any + Send + Sync>>,
+    value_schema: Option<Arc<dyn Schema>>,
+    value: Option<Arc<dyn Any + Send + Sync>>,
+    timestamp: Option<i64>,
+    headers: Box<dyn Headers>,
+    kafka_offset: i64,
+}
+
+impl SinkRecord {
+    pub fn new(topic: String, kafka_partition: i32, kafka_offset: i64) -> Self {
+        Self {
+            topic,
+            kafka_partition,
+            key_schema: None,
+            key: None,
+            value_schema: None,
+            value: None,
+            timestamp: None,
+            headers: Box::new(ConcreteHeaders::new()),
+            kafka_offset,
+        }
+    }
+
+    pub fn builder() -> SinkRecordBuilder {
+        SinkRecordBuilder::new()
+    }
+
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub fn kafka_partition(&self) -> i32 {
+        self.kafka_partition
+    }
+
+    pub fn key_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.key_schema.clone()
+    }
+
+    pub fn key(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.key.clone()
+    }
+
+    pub fn value_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.value_schema.clone()
+    }
+
+    pub fn value(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.value.clone()
+    }
+
+    pub fn timestamp(&self) -> Option<i64> {
+        self.timestamp
+    }
+
+    pub fn headers(&self) -> &dyn Headers {
+        self.headers.as_ref()
+    }
+
+    pub fn kafka_offset(&self) -> i64 {
+        self.kafka_offset
+    }
+}
+
+impl ConnectRecord<SinkRecord> for SinkRecord {
+    fn topic(&self) -> &str {
+        self.topic()
+    }
+
+    fn kafka_partition(&self) -> Option<i32> {
+        Some(self.kafka_partition())
+    }
+
+    fn key_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.key_schema()
+    }
+
+    fn key(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.key()
+    }
+
+    fn value_schema(&self) -> Option<Arc<dyn Schema>> {
+        self.value_schema()
+    }
+
+    fn value(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.value()
+    }
+
+    fn timestamp(&self) -> Option<i64> {
+        self.timestamp()
+    }
+
+    fn headers(&self) -> &dyn Headers {
+        self.headers()
+    }
+
+    fn new_record(
+        self,
+        topic: Option<&str>,
+        partition: Option<i32>,
+        key_schema: Option<Arc<dyn Schema>>,
+        key: Option<Arc<dyn Any + Send + Sync>>,
+        value_schema: Option<Arc<dyn Schema>>,
+        value: Option<Arc<dyn Any + Send + Sync>>,
+        timestamp: Option<i64>,
+        headers: Option<Arc<dyn Headers>>,
+    ) -> SinkRecord {
+        let headers_box = if let Some(h) = headers {
+            h.duplicate()
+        } else {
+            Box::new(ConcreteHeaders::new())
+        };
+
+        SinkRecord {
+            topic: topic.unwrap_or(&self.topic).to_string(),
+            kafka_partition: partition.unwrap_or(self.kafka_partition),
+            key_schema: key_schema.or(self.key_schema),
+            key: key.or(self.key),
+            value_schema: value_schema.or(self.value_schema),
+            value: value.or(self.value),
+            timestamp: timestamp.or(self.timestamp),
+            headers: headers_box,
+            kafka_offset: self.kafka_offset,
+        }
+    }
+}
+
+/// Builder for SinkRecord
+pub struct SinkRecordBuilder {
+    topic: Option<String>,
+    kafka_partition: Option<i32>,
+    key_schema: Option<Arc<dyn Schema>>,
+    key: Option<Arc<dyn Any + Send + Sync>>,
+    value_schema: Option<Arc<dyn Schema>>,
+    value: Option<Arc<dyn Any + Send + Sync>>,
+    timestamp: Option<i64>,
+    headers: Option<Box<dyn Headers>>,
+    kafka_offset: Option<i64>,
+}
+
+impl SinkRecordBuilder {
+    pub fn new() -> Self {
+        Self {
+            topic: None,
+            kafka_partition: None,
+            key_schema: None,
+            key: None,
+            value_schema: None,
+            value: None,
+            timestamp: None,
+            headers: None,
+            kafka_offset: None,
+        }
+    }
+
+    pub fn topic(mut self, topic: String) -> Self {
+        self.topic = Some(topic);
+        self
+    }
+
+    pub fn partition(mut self, partition: i32) -> Self {
+        self.kafka_partition = Some(partition);
+        self
+    }
+
+    pub fn key_schema(mut self, schema: Arc<dyn Schema>) -> Self {
+        self.key_schema = Some(schema);
+        self
+    }
+
+    pub fn key(mut self, key: Arc<dyn Any + Send + Sync>) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn value_schema(mut self, schema: Arc<dyn Schema>) -> Self {
+        self.value_schema = Some(schema);
+        self
+    }
+
+    pub fn value(mut self, value: Arc<dyn Any + Send + Sync>) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub fn timestamp(mut self, timestamp: i64) -> Self {
+        self.timestamp = Some(timestamp);
+        self
+    }
+
+    pub fn headers(mut self, headers: Box<dyn Headers>) -> Self {
+        self.headers = Some(headers);
+        self
+    }
+
+    pub fn offset(mut self, offset: i64) -> Self {
+        self.kafka_offset = Some(offset);
+        self
+    }
+
+    pub fn build(self) -> SinkRecord {
+        SinkRecord {
+            topic: self.topic.unwrap_or_default(),
+            kafka_partition: self.kafka_partition.unwrap_or(0),
+            key_schema: self.key_schema,
+            key: self.key,
+            value_schema: self.value_schema,
+            value: self.value,
+            timestamp: self.timestamp,
+            headers: self
+                .headers
+                .unwrap_or_else(|| Box::new(ConcreteHeaders::new())),
+            kafka_offset: self.kafka_offset.unwrap_or(0),
+        }
+    }
+}
+
+impl Default for SinkRecordBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_primitive_schema() {
+        let schema = ConnectSchema::new(Type::Int32);
+        assert_eq!(schema.type_(), Type::Int32);
+        assert!(!schema.is_optional());
+    }
+
+    #[test]
+    fn test_struct_schema() {
+        let fields = vec![
+            Field::new(
+                0,
+                "name".to_string(),
+                Arc::new(ConnectSchema::new(Type::String)),
+            ),
+            Field::new(
+                1,
+                "age".to_string(),
+                Arc::new(ConnectSchema::new(Type::Int32)),
+            ),
+        ];
+        let schema = ConnectSchema::struct_(fields);
+        assert_eq!(schema.type_(), Type::Struct);
+        assert_eq!(schema.fields().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_array_schema() {
+        let value_schema = Arc::new(ConnectSchema::new(Type::Int32));
+        let schema = ConnectSchema::array(value_schema);
+        assert_eq!(schema.type_(), Type::Array);
+        assert_eq!(schema.value_schema().unwrap().type_(), Type::Int32);
+    }
+
+    #[test]
+    fn test_map_schema() {
+        let key_schema = Arc::new(ConnectSchema::new(Type::String));
+        let value_schema = Arc::new(ConnectSchema::new(Type::Int32));
+        let schema = ConnectSchema::map(key_schema, value_schema);
+        assert_eq!(schema.type_(), Type::Map);
+        assert_eq!(schema.key_schema().unwrap().type_(), Type::String);
+        assert_eq!(schema.value_schema().unwrap().type_(), Type::Int32);
+    }
+
+    #[test]
+    fn test_schema_builder() {
+        let schema = SchemaBuilder::int32()
+            .name("test".to_string())
+            .optional()
+            .version(1)
+            .doc("Test schema".to_string())
+            .build()
+            .unwrap();
+
+        assert_eq!(schema.type_(), Type::Int32);
+        assert!(schema.is_optional());
+        assert_eq!(schema.name(), Some("test"));
+        assert_eq!(schema.version(), Some(1));
+        assert_eq!(schema.doc(), Some("Test schema"));
+    }
+
+    #[test]
+    fn test_struct_builder() {
+        let schema = SchemaBuilder::struct_()
+            .name("Person".to_string())
+            .field(
+                "name".to_string(),
+                Arc::new(ConnectSchema::new(Type::String)),
+            )
+            .field("age".to_string(), Arc::new(ConnectSchema::new(Type::Int32)))
+            .build()
+            .unwrap();
+
+        assert_eq!(schema.type_(), Type::Struct);
+        assert_eq!(schema.fields().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_struct_operations() {
+        let schema = SchemaBuilder::struct_()
+            .name("Person".to_string())
+            .field(
+                "name".to_string(),
+                Arc::new(ConnectSchema::new(Type::String)),
+            )
+            .field("age".to_string(), Arc::new(ConnectSchema::new(Type::Int32)))
+            .build()
+            .unwrap();
+
+        let mut person = Struct::new(schema).unwrap();
+        person.put("name", Box::new("Alice".to_string())).unwrap();
+        person.put("age", Box::new(30i32)).unwrap();
+
+        assert_eq!(person.get_string("name").unwrap(), "Alice");
+        assert_eq!(person.get_int32("age").unwrap(), 30);
+    }
+
+    #[test]
+    fn test_field() {
+        let schema = Arc::new(ConnectSchema::new(Type::String));
+        let field = Field::new(0, "test".to_string(), schema).with_doc("Test field".to_string());
+
+        assert_eq!(field.index(), 0);
+        assert_eq!(field.name(), "test");
+        assert_eq!(field.doc(), Some("Test field"));
+    }
+
+    #[test]
+    fn test_logical_types() {
+        let date_schema = Date::schema();
+        assert_eq!(date_schema.name(), Some(Date::LOGICAL_NAME));
+
+        let time_schema = Time::schema();
+        assert_eq!(time_schema.name(), Some(Time::LOGICAL_NAME));
+
+        let timestamp_schema = Timestamp::schema();
+        assert_eq!(timestamp_schema.name(), Some(Timestamp::LOGICAL_NAME));
+
+        let decimal_schema = Decimal::schema(2);
+        assert_eq!(decimal_schema.name(), Some(Decimal::LOGICAL_NAME));
+    }
+}

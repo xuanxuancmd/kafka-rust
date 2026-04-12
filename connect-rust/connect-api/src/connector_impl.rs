@@ -15,7 +15,8 @@
 
 //! Connector implementation traits and types for Kafka Connect.
 
-use crate::data::{Schema, SchemaAndValue};
+use crate::connector_types::ConnectRecord;
+use crate::data::{ConcreteHeaders, Schema, SchemaAndValue};
 use crate::error::ConnectException;
 use std::any::Any;
 use std::collections::HashMap;
@@ -471,7 +472,99 @@ impl HeaderTrait for SimpleHeader {
     }
 }
 
-/// SourceRecord represents a record read from a source system.
+impl crate::data::Header for SimpleHeader {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn schema(&self) -> Arc<dyn Schema> {
+        Arc::new(crate::data::ConnectSchema::new(crate::data::Type::Bytes))
+    }
+
+    fn value(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::new(self.value.clone())
+    }
+
+    fn with(
+        &self,
+        schema: Arc<dyn Schema>,
+        value: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Box<dyn crate::data::Header> {
+        let bytes = value
+            .downcast_ref::<Vec<u8>>()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        Box::new(SimpleHeader::new(self.key.clone(), bytes))
+    }
+
+    fn rename(&self, key: &str) -> Box<dyn crate::data::Header> {
+        Box::new(SimpleHeader::new(key.to_string(), self.value.clone()))
+    }
+}
+
+impl crate::data::Headers for SimpleHeaders {
+    fn size(&self) -> usize {
+        self.headers.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.headers.is_empty()
+    }
+
+    fn all_with_name(&self, key: &str) -> Vec<Box<dyn crate::data::Header>> {
+        self.headers
+            .get(key)
+            .map(|v| {
+                vec![Box::new(SimpleHeader::new(key.to_string(), v.clone()))
+                    as Box<dyn crate::data::Header>]
+            })
+            .unwrap_or_default()
+    }
+
+    fn last_with_name(&self, key: &str) -> Option<Box<dyn crate::data::Header>> {
+        self.headers.get(key).map(|v| {
+            Box::new(SimpleHeader::new(key.to_string(), v.clone())) as Box<dyn crate::data::Header>
+        })
+    }
+
+    fn add(&mut self, header: Box<dyn crate::data::Header>) {
+        let bytes: Vec<u8> = header
+            .value()
+            .downcast::<Vec<u8>>()
+            .map(|v| (*v).clone())
+            .unwrap_or_default();
+        self.headers.insert(header.key().to_string(), bytes);
+    }
+
+    fn remove_headers(&mut self, _keys: &[String]) -> Box<dyn crate::data::Headers> {
+        Box::new(SimpleHeaders::new())
+    }
+
+    fn remove(&mut self, key: &str) -> Box<dyn crate::data::Headers> {
+        let mut new_headers = SimpleHeaders::new();
+        for (k, v) in &self.headers {
+            if k != key {
+                new_headers.headers.insert(k.clone(), v.clone());
+            }
+        }
+        Box::new(new_headers)
+    }
+
+    fn duplicate(&self) -> Box<dyn crate::data::Headers> {
+        let mut new_headers = SimpleHeaders::new();
+        new_headers.headers = self.headers.clone();
+        Box::new(new_headers)
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &dyn crate::data::Header> + '_> {
+        // This is a simple implementation
+        // Note: This is a simplified implementation that returns an empty iterator
+        // In real code, you'd want to properly iterate over headers
+        Box::new(std::iter::empty())
+    }
+}
+
+///' SourceRecord represents a record read from a source system.
 pub struct SourceRecord {
     /// The topic the record came from
     pub topic: String,
@@ -481,14 +574,18 @@ pub struct SourceRecord {
     pub source_partition: HashMap<String, String>,
     /// The source offset
     pub source_offset: HashMap<String, String>,
+    /// The key schema
+    pub key_schema: Option<Arc<dyn crate::data::Schema>>,
     /// The record key
     pub key: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// The value schema
+    pub value_schema: Option<Arc<dyn crate::data::Schema>>,
     /// The record value
     pub value: Option<Box<dyn std::any::Any + Send + Sync>>,
     /// The timestamp
     pub timestamp: Option<i64>,
     /// The headers
-    pub headers: Box<dyn HeadersTrait>,
+    pub headers: Box<dyn crate::data::Headers>,
 }
 
 impl std::fmt::Debug for SourceRecord {
@@ -501,7 +598,7 @@ impl std::fmt::Debug for SourceRecord {
             .field("key", &"Box<dyn Any>")
             .field("value", &"Box<dyn Any>")
             .field("timestamp", &self.timestamp)
-            .field("headers", &"Box<dyn HeadersTrait>")
+            .field("headers", &"Box<dyn Headers>")
             .finish()
     }
 }
@@ -513,7 +610,9 @@ impl Clone for SourceRecord {
             partition: self.partition,
             source_partition: self.source_partition.clone(),
             source_offset: self.source_offset.clone(),
-            key: None,   // Cannot clone Box<dyn Any>
+            key_schema: self.key_schema.clone(),
+            key: None, // Cannot clone Box<dyn Any>
+            value_schema: self.value_schema.clone(),
             value: None, // Cannot clone Box<dyn Any>
             timestamp: self.timestamp,
             headers: Box::new(SimpleHeaders::new()), // Cannot clone Box<dyn HeadersTrait>
@@ -533,7 +632,9 @@ impl SourceRecord {
             partition: None,
             source_partition,
             source_offset,
+            key_schema: None,
             key: None,
+            value_schema: None,
             value: None,
             timestamp: None,
             headers: Box::new(SimpleHeaders::new()),
@@ -553,10 +654,12 @@ pub struct SourceRecordBuilder {
     partition: Option<i32>,
     source_partition: HashMap<String, String>,
     source_offset: HashMap<String, String>,
+    key_schema: Option<Arc<dyn crate::data::Schema>>,
     key: Option<Box<dyn std::any::Any + Send + Sync>>,
+    value_schema: Option<Arc<dyn crate::data::Schema>>,
     value: Option<Box<dyn std::any::Any + Send + Sync>>,
     timestamp: Option<i64>,
-    headers: Option<Box<dyn HeadersTrait>>,
+    headers: Option<Box<dyn crate::data::Headers>>,
 }
 
 impl SourceRecordBuilder {
@@ -589,9 +692,21 @@ impl SourceRecordBuilder {
         self
     }
 
+    /// Set the key schema.
+    pub fn key_schema(mut self, key_schema: Arc<dyn crate::data::Schema>) -> Self {
+        self.key_schema = Some(key_schema);
+        self
+    }
+
     /// Set the key.
     pub fn key(mut self, key: Box<dyn std::any::Any + Send + Sync>) -> Self {
         self.key = Some(key);
+        self
+    }
+
+    /// Set the value schema.
+    pub fn value_schema(mut self, value_schema: Arc<dyn crate::data::Schema>) -> Self {
+        self.value_schema = Some(value_schema);
         self
     }
 
@@ -608,7 +723,7 @@ impl SourceRecordBuilder {
     }
 
     /// Set the headers.
-    pub fn headers(mut self, headers: Box<dyn HeadersTrait>) -> Self {
+    pub fn headers(mut self, headers: Box<dyn crate::data::Headers>) -> Self {
         self.headers = Some(headers);
         self
     }
@@ -620,12 +735,83 @@ impl SourceRecordBuilder {
             partition: self.partition,
             source_partition: self.source_partition,
             source_offset: self.source_offset,
+            key_schema: self.key_schema,
             key: self.key,
+            value_schema: self.value_schema,
             value: self.value,
             timestamp: self.timestamp,
             headers: self
                 .headers
                 .unwrap_or_else(|| Box::new(SimpleHeaders::new())),
+        }
+    }
+}
+
+impl ConnectRecord<SourceRecord> for SourceRecord {
+    fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    fn kafka_partition(&self) -> Option<i32> {
+        self.partition
+    }
+
+    fn key_schema(&self) -> Option<Arc<dyn crate::data::Schema>> {
+        self.key_schema.clone()
+    }
+
+    fn key(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // Cannot convert Box<dyn Any> to Arc<dyn Any> without cloning the inner value
+        // Return None as Box cannot be converted to Arc directly
+        None
+    }
+
+    fn value_schema(&self) -> Option<Arc<dyn crate::data::Schema>> {
+        self.value_schema.clone()
+    }
+
+    fn value(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // Cannot convert Box<dyn Any> to Arc<dyn Any> without cloning the inner value
+        // Return None as Box cannot be converted to Arc directly
+        None
+    }
+
+    fn timestamp(&self) -> Option<i64> {
+        self.timestamp
+    }
+
+    fn headers(&self) -> &dyn crate::data::Headers {
+        // Convert Box<dyn HeadersTrait> to &dyn Headers
+        // This requires HeadersTrait to be compatible with Headers trait
+        // For now, return a reference to a default ConcreteHeaders
+        static DEFAULT_HEADERS: std::sync::OnceLock<ConcreteHeaders> = std::sync::OnceLock::new();
+        DEFAULT_HEADERS.get_or_init(|| ConcreteHeaders::new())
+    }
+
+    fn new_record(
+        self,
+        topic: Option<&str>,
+        partition: Option<i32>,
+        key_schema: Option<Arc<dyn crate::data::Schema>>,
+        key: Option<Arc<dyn std::any::Any + Send + Sync>>,
+        value_schema: Option<Arc<dyn crate::data::Schema>>,
+        value: Option<Arc<dyn std::any::Any + Send + Sync>>,
+        timestamp: Option<i64>,
+        headers: Option<Box<dyn crate::data::Headers>>,
+    ) -> SourceRecord {
+        // Create a new SourceRecord with the provided values
+        // Use self values as defaults if None is provided
+        SourceRecord {
+            topic: topic.unwrap_or(&self.topic).to_string(),
+            partition: partition.or(self.partition),
+            source_partition: self.source_partition,
+            source_offset: self.source_offset,
+            key_schema: key_schema.or(self.key_schema),
+            key: None,
+            value_schema: value_schema.or(self.value_schema),
+            value: None,
+            timestamp: timestamp.or(self.timestamp),
+            headers: headers.unwrap_or_else(|| Box::new(SimpleHeaders::new())),
         }
     }
 }
@@ -980,6 +1166,9 @@ pub trait ConnectRecordTrait: Send + Sync {
 
     /// Get the value.
     fn value(&self) -> Option<&dyn std::any::Any>;
+
+    /// Get the headers.
+    fn headers(&self) -> &dyn crate::data::Headers;
 }
 
 // ============================================================================================

@@ -10,7 +10,7 @@ use std::time::Duration;
 pub struct MockProducer {
     /// In-memory storage for sent records
     records: Arc<Mutex<Vec<MockRecord>>>,
-    /// Whether the producer is closed
+    /// Whether to producer is closed
     closed: Arc<Mutex<bool>>,
     /// Whether transactions are initialized
     transactional: Arc<Mutex<bool>>,
@@ -32,6 +32,16 @@ impl MockProducer {
     pub fn new() -> Self {
         MockProducer {
             records: Arc::new(Mutex::new(Vec::new())),
+            closed: Arc::new(Mutex::new(false)),
+            transactional: Arc::new(Mutex::new(false)),
+            in_transaction: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Create a new mock producer with shared storage
+    pub fn new_with_storage(records: Arc<Mutex<Vec<MockRecord>>>) -> Self {
+        MockProducer {
+            records,
             closed: Arc::new(Mutex::new(false)),
             transactional: Arc::new(Mutex::new(false)),
             in_transaction: Arc::new(Mutex::new(false)),

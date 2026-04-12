@@ -19,3 +19,7 @@
 pub mod connector_health;
 
 pub use connector_health::*;
+
+// Re-export ConnectClusterState from rest module
+// This is a forward declaration to avoid circular dependency
+// The actual implementation is in rest.rs

@@ -1,7 +1,8 @@
 //! Unit Unit tests for complex transformations
 
+use connect_api::connector_types::ConnectRecord;
 use connect_api::data::ConcreteHeaders;
-use connect_api::{Closeable, Configurable, ConnectRecord, Transformation};
+use connect_api::{Closeable, Configurable, Transformation};
 use connect_transforms::complex::{
     Cast, ExtractField, Flatten, HeaderFrom, HoistField, InsertField, MaskField, ReplaceField,
     TimestampConverter,
@@ -49,6 +50,20 @@ impl ConnectRecord<MockRecord> for MockRecord {
         use std::sync::OnceLock;
         static EMPTY_HEADERS: OnceLock<ConcreteHeaders> = OnceLock::new();
         EMPTY_HEADERS.get_or_init(|| ConcreteHeaders::new())
+    }
+
+    fn new_record(
+        self,
+        _topic: Option<&str>,
+        _partition: Option<i32>,
+        _key_schema: Option<Arc<dyn connect_api::Schema>>,
+        _key: Option<Arc<dyn Any + Send + Sync>>,
+        _value_schema: Option<Arc<dyn connect_api::Schema>>,
+        _value: Option<Arc<dyn Any + Send + Sync>>,
+        _timestamp: Option<i64>,
+        _headers: Option<Box<dyn connect_api::Headers>>,
+    ) -> MockRecord {
+        self
     }
 }
 

@@ -7,6 +7,8 @@ use kafka_clients_trait::admin::{
     ConsumerGroupDescription, MemberDescription,
 };
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,11 +67,11 @@ impl KafkaAdmin for MockAdminClient {
     fn create_topics(
         &self,
         new_topics: Vec<NewTopic>,
-    ) -> impl std::future::Future<Output = Result<HashMap<String, String>, String>> + Send {
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>> {
         let topics = self.topics.clone();
         let closed = self.closed.clone();
 
-        async move {
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
@@ -96,17 +98,17 @@ impl KafkaAdmin for MockAdminClient {
             }
 
             Ok(results)
-        }
+        })
     }
 
     fn delete_topics(
         &self,
         topic_names: Vec<String>,
-    ) -> impl std::future::Future<Output = Result<HashMap<String, String>, String>> + Send {
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>> {
         let topics = self.topics.clone();
         let closed = self.closed.clone();
 
-        async move {
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
@@ -126,17 +128,17 @@ impl KafkaAdmin for MockAdminClient {
             }
 
             Ok(results)
-        }
+        })
     }
 
     fn describe_topics(
         &self,
         topic_names: Vec<String>,
-    ) -> impl std::future::Future<Output = Result<HashMap<String, TopicDescription>, String>> + Send {
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, TopicDescription>, String>> + Send>> {
         let topics = self.topics.clone();
         let closed = self.closed.clone();
 
-        async move {
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
@@ -180,14 +182,14 @@ impl KafkaAdmin for MockAdminClient {
             }
 
             Ok(results)
-        }
+        })
     }
 
-    fn list_topics(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> + Send {
+    fn list_topics(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send>> {
         let topics = self.topics.clone();
         let closed = self.closed.clone();
 
-        async move {
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
@@ -195,13 +197,13 @@ impl KafkaAdmin for MockAdminClient {
 
             let all_topics = topics.lock().unwrap();
             Ok(all_topics.keys().cloned().collect())
-        }
+        })
     }
 
-    fn describe_cluster(&self) -> impl std::future::Future<Output = Result<ClusterDescription, String>> + Send {
+    fn describe_cluster(&self) -> Pin<Box<dyn Future<Output = Result<ClusterDescription, String>> + Send>> {
         let closed = self.closed.clone();
 
-        async move {
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
@@ -223,36 +225,36 @@ impl KafkaAdmin for MockAdminClient {
                 }],
                 authorized_operations: vec!["ALL".to_string()],
             })
-        }
+        })
     }
 
-    fn list_consumer_groups(&self) -> impl std::future::Future<Output = Result<Vec<String>, String>> + Send {
+    fn list_consumer_groups(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send>> {
         let closed = self.closed.clone();
-
-        async move {
+ 
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
             }
-
+ 
             // Mock returns empty list
             Ok(Vec::new())
-        }
+        })
     }
-
+ 
     fn describe_consumer_group(
         &self,
         group_id: &str,
-    ) -> impl std::future::Future<Output = Result<ConsumerGroupDescription, String>> + Send {
+    ) -> Pin<Box<dyn Future<Output = Result<ConsumerGroupDescription, String>> + Send>> {
         let group_id = group_id.to_string();
         let closed = self.closed.clone();
-
-        async move {
+ 
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
             }
-
+ 
             Ok(ConsumerGroupDescription {
                 group_id: group_id.clone(),
                 is_simple_consumer_group: false,
@@ -264,41 +266,46 @@ impl KafkaAdmin for MockAdminClient {
                     assignments: vec![],
                 }],
             })
-        }
+        })
     }
-
+ 
     fn delete_consumer_group(
         &self,
         _group_id: &str,
-    ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let closed = self.closed.clone();
-
-        async move {
+ 
+        Box::pin(async move {
             let is_closed = *closed.lock().unwrap();
             if is_closed {
                 return Err("Admin client is closed".to_string());
             }
-
+ 
             // Mock delete is a no-op
             Ok(())
-        }
+        })
     }
-
-    fn close(&self) -> impl std::future::Future<Output = ()> + Send {
+ 
+    fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let closed = self.closed.clone();
-
-        async move {
+ 
+        Box::pin(async move {
             let mut c = closed.lock().unwrap();
             *c = true;
-        }
+        })
     }
-
-    fn close_with_timeout(&self, _timeout: Duration) -> impl std::future::Future<Output = ()> + Send {
+ 
+    fn close_with_timeout(&self, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let closed = self.closed.clone();
-
-        async move {
+ 
+        Box::pin(async move {
+            let is_closed = *closed.lock().unwrap();
+            if is_closed {
+                return Err("Admin client is closed".to_string());
+            }
             let mut c = closed.lock().unwrap();
             *c = true;
-        }
+            Ok(())
+        })
     }
 }

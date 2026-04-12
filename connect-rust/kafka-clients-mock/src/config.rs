@@ -29,6 +29,7 @@ impl MockConfigDef {
             documentation: "List of brokers".to_string(),
             importance: ConfigImportance::High,
             required: true,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -38,6 +39,7 @@ impl MockConfigDef {
             documentation: "Number of acknowledgments".to_string(),
             importance: ConfigImportance::High,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -47,6 +49,7 @@ impl MockConfigDef {
             documentation: "Number of retries".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -56,6 +59,7 @@ impl MockConfigDef {
             documentation: "Batch size in bytes".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -65,6 +69,7 @@ impl MockConfigDef {
             documentation: "Linger time in milliseconds".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -74,6 +79,7 @@ impl MockConfigDef {
             documentation: "Buffer memory in bytes".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -83,6 +89,7 @@ impl MockConfigDef {
             documentation: "Consumer group ID".to_string(),
             importance: ConfigImportance::High,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -92,6 +99,7 @@ impl MockConfigDef {
             documentation: "Auto offset reset policy".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         config.add(ConfigValue {
@@ -101,6 +109,7 @@ impl MockConfigDef {
             documentation: "Enable auto commit".to_string(),
             importance: ConfigImportance::Medium,
             required: false,
+            error_messages: Vec::new(),
         });
 
         MockConfigDef { config }

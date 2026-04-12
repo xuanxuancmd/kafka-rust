@@ -4,8 +4,10 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::Arc;
 
 use crate::policy::{DefaultReplicationPolicy, IdentityReplicationPolicy, ReplicationPolicy};
+use kafka_clients_trait::admin::KafkaAdminSync;
 
 /// 配置键常量
 pub mod config_keys {
@@ -24,6 +26,8 @@ pub mod config_keys {
     pub const PRODUCER_CLIENT_CLIENT_PREFIX: &str = "producer.";
     /// 源集群别名配置键
     pub const SOURCE_CLUSTER_ALIAS: &str = "source.cluster.alias";
+    /// Forwarding管理类配置键
+    pub const FORWARDING_ADMIN_CLASS: &str = "forwarding.admin.class";
 }
 
 /// MirrorClientConfig - MirrorClient配置
@@ -63,7 +67,7 @@ impl MirrorClientConfig {
     ///
     /// # 返回
     /// 复制策略实例
-    pub fn replication_policy(&self) -> Box<dyn ReplicationPolicy> {
+    pub fn replication_policy(&self) -> Arc<dyn ReplicationPolicy> {
         // 根据配置创建相应的复制策略
         if self
             .replication_policy_class
@@ -71,11 +75,11 @@ impl MirrorClientConfig {
         {
             let mut policy = IdentityReplicationPolicy::new();
             policy.configure(&self.props);
-            Box::new(policy)
+            Arc::new(policy)
         } else {
             let mut policy = DefaultReplicationPolicy::new();
             policy.configure(&self.props);
-            Box::new(policy)
+            Arc::new(policy)
         }
     }
 
@@ -139,6 +143,44 @@ impl MirrorClientConfig {
     /// 配置值（如果存在）
     pub fn get(&self, key: &str) -> Option<&String> {
         self.props.get(key)
+    }
+
+    /// 获取ForwardingAdmin实例
+    ///
+    /// # 参数
+    /// - `config`: 配置映射
+    ///
+    /// # 返回
+    /// ForwardingAdmin实例
+    ///
+    /// # 错误
+    /// 如果ForwardingAdmin类未找到或实例化失败
+    pub fn forwarding_admin(
+        &self,
+        config: HashMap<String, String>,
+    ) -> Result<Box<dyn kafka_clients_trait::admin::ForwardingAdmin>, Box<dyn Error>> {
+        // 获取ForwardingAdmin类名
+        let forwarding_admin_class = self
+            .get(config_keys::FORWARDING_ADMIN_CLASS)
+            .cloned()
+            .unwrap_or_else(|| {
+                "org.apache.kafka.connect.mirror.DefaultReplicationPolicy".to_string()
+            });
+
+        // 简化实现：使用MockForwardingAdmin作为默认实现
+        // 在实际实现中，这里应该根据类名动态实例化对应的ForwardingAdmin实现
+        // 参考 Java MirrorClientConfig.forwardingAdmin() 实现：
+        // return Utils.newParameterizedInstance(
+        //     getClass(FORWARDING_ADMIN_CLASS).getName(),
+        //     (Class<Map<String, Object>>) (Class) Map.class,
+        //     config
+        // );
+
+        // 暂时返回MockForwardingAdmin作为占位符
+        // TODO: 实现完整的动态实例化逻辑
+        Ok(Box::new(
+            kafka_clients_trait::admin::MockForwardingAdmin::new(config),
+        ))
     }
 }
 
@@ -215,7 +257,7 @@ pub trait MirrorClient {
     ///
     /// # 返回
     /// 复制策略实例
-    fn replication_policy(&self) -> Box<dyn ReplicationPolicy>;
+    fn replication_policy(&self) -> Arc<dyn ReplicationPolicy>;
 
     /// 关闭客户端
     fn close(&mut self) -> Result<(), Box<dyn Error>>;
@@ -226,7 +268,12 @@ pub trait MirrorClient {
 /// 提供MirrorClient trait的基本实现
 pub struct BasicMirrorClient {
     /// 复制策略
-    replication_policy: Box<dyn ReplicationPolicy>,
+    replication_policy: Arc<dyn ReplicationPolicy>,
+    /// Admin客户端
+    admin_client: Option<Box<dyn kafka_clients_trait::admin::KafkaAdminSync>>,
+    /// Consumer客户端
+    consumer_client:
+        Option<Box<dyn kafka_clients_trait::consumer::KafkaConsumerSync<Vec<u8>, Vec<u8>>>>,
     /// 消费者配置
     consumer_config: HashMap<String, String>,
     /// 是否已关闭
@@ -234,21 +281,18 @@ pub struct BasicMirrorClient {
 }
 
 impl BasicMirrorClient {
-    /// 创建新的BasicMirrorClient
-    ///
-    /// # 参数
-    /// - `config`: MirrorClient配置
+    /// 列出所有主题
     ///
     /// # 返回
-    /// 新的BasicMirrorClient实例
-    pub fn new(config: MirrorClientConfig) -> Self {
-        let replication_policy = config.replication_policy();
-        let consumer_config = config.consumer_config();
-
-        BasicMirrorClient {
-            replication_policy,
-            consumer_config,
-            closed: false,
+    /// 所有主题名称的集合
+    fn list_topics(&self) -> Result<std::collections::HashSet<String>, Box<dyn Error>> {
+        // 使用 admin_client 列出主题
+        if let Some(admin) = &self.admin_client {
+            let topics = admin.list_topics_sync()?;
+            Ok(topics.into_iter().collect())
+        } else {
+            // 如果没有 admin_client，返回空集合
+            Ok(std::collections::HashSet::new())
         }
     }
 
@@ -261,24 +305,39 @@ impl BasicMirrorClient {
     /// # 返回
     /// 新的BasicMirrorClient实例
     pub fn with_params(
-        replication_policy: Box<dyn ReplicationPolicy>,
+        replication_policy: Arc<dyn ReplicationPolicy>,
         consumer_config: HashMap<String, String>,
     ) -> Self {
         BasicMirrorClient {
             replication_policy,
             consumer_config,
+            admin_client: None,
+            consumer_client: None,
             closed: false,
         }
     }
 
-    /// 列出所有主题
+    /// 创建带有Admin客户端的BasicMirrorClient
+    ///
+    /// # 参数
+    /// - `admin_client`: Admin客户端
+    /// - `replication_policy`: 复制策略
+    /// - `consumer_config`: 消费者配置
     ///
     /// # 返回
-    /// 所有主题名称的集合
-    fn list_topics(&self) -> Result<std::collections::HashSet<String>, Box<dyn Error>> {
-        // 简化实现，实际应该使用adminClient.listTopics()
-        // 这里返回一个空集合作为占位符
-        Ok(std::collections::HashSet::new())
+    /// 新的BasicMirrorClient实例
+    pub fn with_admin(
+        admin_client: Box<dyn kafka_clients_trait::admin::KafkaAdminSync>,
+        replication_policy: Arc<dyn ReplicationPolicy>,
+        consumer_config: HashMap<String, String>,
+    ) -> Self {
+        BasicMirrorClient {
+            admin_client: Some(admin_client),
+            replication_policy,
+            consumer_config,
+            consumer_client: None,
+            closed: false,
+        }
     }
 
     /// 统计主题的复制跳数
@@ -371,7 +430,7 @@ impl BasicMirrorClient {
     /// # 返回
     /// 如果是心跳主题返回true，否则返回false
     fn is_heartbeat_topic(&self, topic: &str) -> bool {
-        topic.ends_with(&self.replication_policy().heartbeats_topic())
+        self.replication_policy().is_heartbeats_topic(topic)
     }
 
     /// 判断是否为检查点主题
@@ -382,7 +441,7 @@ impl BasicMirrorClient {
     /// # 返回
     /// 如果是检查点主题返回true，否则返回false
     fn is_checkpoint_topic(&self, topic: &str) -> bool {
-        topic.ends_with(&self.replication_policy().checkpoints_topic())
+        self.replication_policy().is_checkpoints_topic(topic)
     }
 
     /// 判断是否为远程主题
@@ -393,24 +452,124 @@ impl BasicMirrorClient {
     /// # 返回
     /// 如果是远程主题返回true，否则返回false
     fn is_remote_topic(&self, topic: &str) -> bool {
-        !self
-            .replication_policy()
-            .is_internal_topic(topic.to_string())
+        !self.replication_policy().is_internal_topic(topic)
             && !self
                 .replication_policy()
                 .topic_source(topic.to_string())
                 .is_empty()
     }
+
+    /// 判断是否到达流末尾
+    ///
+    /// # 参数
+    /// - `consumer`: 消费者引用
+    /// - `assignments`: 分区列表
+    ///
+    /// # 返回
+    /// 如果到达流末尾返回true，否则返回false
+    fn end_of_stream(
+        &self,
+        consumer: &dyn kafka_clients_trait::consumer::KafkaConsumerSync<Vec<u8>, Vec<u8>>,
+        assignments: &[kafka_clients_trait::consumer::TopicPartition],
+    ) -> Result<bool, Box<dyn Error>> {
+        let end_offsets = consumer.end_offsets(assignments.to_vec())?;
+        for partition in assignments {
+            let position = consumer.position_sync(partition)?;
+            let end_offset = end_offsets.get(partition).copied().unwrap_or(0);
+            if position < end_offset {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// 创建消费者
+    ///
+    /// # 返回
+    /// 新的消费者实例
+    fn consumer(
+        &self,
+    ) -> Result<
+        Box<dyn kafka_clients_trait::consumer::KafkaConsumerSync<Vec<u8>, Vec<u8>>>,
+        Box<dyn Error>,
+    > {
+        // 使用 MockKafkaConsumerSync 作为默认实现
+        // 在实际实现中，这里应该创建真正的 Kafka 消费者
+        Ok(Box::new(
+            kafka_clients_trait::consumer::MockKafkaConsumerSync::new(),
+        ))
+    }
 }
 
 impl MirrorClient for BasicMirrorClient {
     fn replication_hops(&self, upstream_cluster_alias: String) -> Result<i32, Box<dyn Error>> {
+        log::debug!(
+            "Computing replication hops for upstream cluster {}",
+            upstream_cluster_alias
+        );
+
         let heartbeat_topics = self.heartbeat_topics()?;
         let mut min_hops = i32::MAX;
 
         for topic in &heartbeat_topics {
             let hops = self.count_hops_for_topic(topic, &upstream_cluster_alias);
             if let Ok(h) = hops {
+                if h < min_hops {
+                    min_hops = h;
+                }
+            }
+        }
+
+        if min_hops == i32::MAX {
+            log::warn!("No path to upstream cluster {}", upstream_cluster_alias);
+            Err(format!("No path to upstream cluster {}", upstream_cluster_alias).into())
+        } else {
+            log::debug!(
+                "Replication hops for {}: {}",
+                upstream_cluster_alias,
+                min_hops
+            );
+            Ok(min_hops)
+        }
+    }
+
+    fn heartbeat_topics(&self) -> Result<Vec<String>, Box<dyn Error>> {
+        log::debug!("Listing heartbeat topics");
+        let all_topics = self.list_topics()?;
+        let heartbeat_topics: Vec<String> = all_topics
+            .into_iter()
+            .filter(|topic| self.is_heartbeat_topic(topic))
+            .collect();
+        log::debug!("Found {} heartbeat topics", heartbeat_topics.len());
+        Ok(heartbeat_topics)
+    }
+
+    fn is_heartbeat_topic(&self, topic: &str) -> bool {
+        self.replication_policy.is_heartbeats_topic(topic)
+    }
+
+    /// 判断是否为检查点主题
+    fn is_checkpoint_topic(&self, topic: &str) -> bool {
+        self.replication_policy.is_checkpoints_topic(topic)
+    }
+
+    /// 判断是否为远程主题
+    fn is_remote_topic(&self, topic: &str) -> bool {
+        !self.replication_policy.is_internal_topic(topic)
+            && !self
+                .replication_policy
+                .topic_source(topic.to_string())
+                .is_empty()
+    }
+}
+
+impl MirrorClient for TestMirrorClient {
+    fn replication_hops(&self, upstream_cluster_alias: String) -> Result<i32, Box<dyn Error>> {
+        let heartbeat_topics = self.heartbeat_topics()?;
+        let mut min_hops = i32::MAX;
+
+        for topic in &heartbeat_topics {
+            if let Ok(h) = self.count_hops_for_topic(topic, &upstream_cluster_alias) {
                 if h < min_hops {
                     min_hops = h;
                 }
@@ -464,7 +623,7 @@ impl MirrorClient for BasicMirrorClient {
         let all_remote_topics = self.remote_topics()?;
         Ok(all_remote_topics
             .into_iter()
-            .filter(|topic| self.replication_policy().topic_source(topic.clone()) == source)
+            .filter(|topic| self.replication_policy.topic_source(topic.clone()) == source)
             .collect())
     }
 
@@ -474,20 +633,16 @@ impl MirrorClient for BasicMirrorClient {
         _remote_cluster_alias: String,
         _timeout: i64,
     ) -> Result<HashMap<String, i64>, Box<dyn Error>> {
-        // 简化实现，实际应该从检查点主题读取偏移量
-        // 这里返回一个空映射作为占位符
+        // TestMirrorClient 不支持消费 checkpoint topic
+        // 返回空映射
         Ok(HashMap::new())
     }
 
-    fn replication_policy(&self) -> Box<dyn ReplicationPolicy> {
-        // 注意：这里需要克隆replication_policy，但由于trait object不能直接克隆
-        // 实际实现可能需要使用Arc或其他共享机制
-        // 这里返回一个默认实现作为占位符
-        Box::new(DefaultReplicationPolicy::new())
+    fn replication_policy(&self) -> Arc<dyn ReplicationPolicy> {
+        self.replication_policy.clone()
     }
 
     fn close(&mut self) -> Result<(), Box<dyn Error>> {
-        self.closed = true;
         Ok(())
     }
 }
