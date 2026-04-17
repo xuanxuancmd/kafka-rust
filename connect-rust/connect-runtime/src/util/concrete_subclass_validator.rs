@@ -16,8 +16,8 @@
  */
 
 use crate::util::Callback;
-use kafka_clients_trait::config::ConfigDef;
-use kafka_clients_trait::util::Utils;
+use common_trait::config::ConfigDef;
+use common_trait::util::Utils;
 use std::any::Any;
 
 /// Validator that ensures a class is a concrete subclass of a given superclass

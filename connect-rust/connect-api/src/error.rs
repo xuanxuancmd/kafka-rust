@@ -23,6 +23,8 @@ pub enum ConnectError {
     IoError(String),
     /// Generic error
     Other(String),
+    /// Not found exception for missing connector or task errors
+    NotFound(NotFoundException),
 }
 
 impl fmt::Display for ConnectError {
@@ -37,6 +39,7 @@ impl fmt::Display for ConnectError {
             ConnectError::DeserializationError(msg) => write!(f, "Deserialization error: {}", msg),
             ConnectError::IoError(msg) => write!(f, "IO error: {}", msg),
             ConnectError::Other(msg) => write!(f, "Error: {}", msg),
+            ConnectError::NotFound(err) => write!(f, "{}", err),
         }
     }
 }
@@ -61,6 +64,7 @@ impl RetriableError for ConnectError {
             ConnectError::DeserializationError(_) => false,
             ConnectError::IoError(_) => true,
             ConnectError::Other(_) => false,
+            ConnectError::NotFound(_) => false,
         }
     }
 }
@@ -221,3 +225,32 @@ impl fmt::Display for IllegalWorkerStateException {
 }
 
 impl std::error::Error for IllegalWorkerStateException {}
+
+/// Not found exception for missing connector or task errors
+#[derive(Debug, Clone)]
+pub struct NotFoundException {
+    message: String,
+}
+
+impl NotFoundException {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for NotFoundException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Not found exception: {}", self.message)
+    }
+}
+
+impl std::error::Error for NotFoundException {}
+
+/// From trait for converting NotFoundException to ConnectError
+impl From<NotFoundException> for ConnectError {
+    fn from(err: NotFoundException) -> Self {
+        ConnectError::NotFound(err)
+    }
+}

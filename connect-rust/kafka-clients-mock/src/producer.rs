@@ -2,7 +2,7 @@
 //!
 //! This module provides a mock implementation of KafkaProducer for testing purposes.
 
-use kafka_clients_trait::producer::{KafkaProducer, ProducerRecord, RecordMetadata};
+use common_trait::producer::{KafkaProducer, ProducerRecord, RecordMetadata};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -109,7 +109,7 @@ where
     fn send_with_callback(
         &self,
         record: ProducerRecord<K, V>,
-        _callback: Box<dyn kafka_clients_trait::producer::Callback>,
+        _callback: Box<dyn common_trait::producer::Callback>,
     ) -> impl std::future::Future<Output = ()> + Send {
         let records = self.records.clone();
         let closed = self.closed.clone();
@@ -141,11 +141,11 @@ where
     fn partitions_for(
         &self,
         topic: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<kafka_clients_trait::producer::PartitionInfo>, String>> + Send {
+    ) -> impl std::future::Future<Output = Result<Vec<common_trait::producer::PartitionInfo>, String>> + Send {
         let topic = topic.to_string();
 
         async move {
-            Ok(vec![kafka_clients_trait::producer::PartitionInfo {
+            Ok(vec![common_trait::producer::PartitionInfo {
                 topic: topic.clone(),
                 partition: 0,
                 leader: Some(0),

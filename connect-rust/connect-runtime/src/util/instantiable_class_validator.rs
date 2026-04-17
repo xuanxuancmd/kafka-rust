@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-use kafka_clients_trait::config::{ConfigDef, ConfigException};
-use kafka_clients_trait::util::Utils;
+use common_trait::config::{ConfigDef, ConfigException};
+use common_trait::util::Utils;
 
 /// Validator that ensures a class has a public, no-argument constructor
 pub struct InstantiableClassValidator;

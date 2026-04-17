@@ -18,8 +18,8 @@
 use crate::errors::ConnectException;
 use crate::runtime::distributed::DistributedConfig;
 use crate::runtime::WorkerConfig;
-use kafka_clients_trait::common_client_configs::CommonClientConfigs;
-use kafka_clients_trait::record_batch::RecordBatch;
+use common_trait::common_client_configs::CommonClientConfigs;
+use common_trait::record_batch::RecordBatch;
 use std::collections::HashMap;
 use std::ops::Function;
 

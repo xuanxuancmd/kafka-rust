@@ -19,9 +19,9 @@
 use crate::errors::ConnectException;
 use crate::util::Callback;
 use crate::util::TopicAdmin;
-use kafka_clients_trait::consumer::Consumer;
-use kafka_clients_trait::producer::Producer;
-use kafka_clients_trait::time::Time;
+use common_trait::consumer::Consumer;
+use common_trait::producer::Producer;
+use common_trait::time::Time;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};

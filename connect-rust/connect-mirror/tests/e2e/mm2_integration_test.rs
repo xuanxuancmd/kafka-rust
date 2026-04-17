@@ -9,9 +9,9 @@
 
 use kafka_clients_mock::{MockProducer, MockConsumer, MockAdminClient};
 use kafka_clients_mock::consumer::MockConsumerRecord;
-use kafka_clients_trait::producer::{KafkaProducer, ProducerRecord};
-use kafka_clients_trait::consumer::{KafkaConsumer, TopicPartition};
-use kafka_clients_trait::admin::{KafkaAdmin, NewTopic};
+use common_trait::producer::{KafkaProducer, ProducerRecord};
+use common_trait::consumer::{KafkaConsumer, TopicPartition};
+use common_trait::admin::{KafkaAdmin, NewTopic};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -34,6 +34,27 @@ pub trait Versioned {
 }
 
 // ============================================================================================
+// ConnectPlugin trait - for components that provide version and configuration specifications
+// ============================================================================================
+
+/// Trait for components that provide version and configuration specifications.
+/// This trait establishes a common contract for all Kafka Connect components
+/// that define a version and expose configurable properties, enabling uniform discovery and introspection
+/// of component configurations.
+///
+/// Components implementing this trait declare their version and configuration requirements
+/// through a ConfigDef object, which describes the configuration properties
+/// including their names, types, default values, validators, and documentation.
+pub trait ConnectPlugin: Versioned {
+    /// Returns the configuration specification for this component.
+    ///
+    /// The returned ConfigDef object describes all configuration properties
+    /// that this component accepts, including their types, default values, validators,
+    /// importance levels, and documentation strings.
+    fn config(&self) -> ConfigDef;
+}
+
+// ============================================================================================
 // Connector Context traits
 // ============================================================================================
 
@@ -184,15 +205,45 @@ impl Default for TransactionBoundary {
 
 /// TransactionContext can be used to define producer transaction boundaries
 /// when exactly-once support is enabled for the connector.
+/// Provided to source tasks to allow them to define their own producer transaction boundaries.
 pub trait TransactionContext: Send + Sync {
-    /// Signal the start of a new transaction.
-    fn begin_transaction(&self) -> Result<(), ConnectException>;
+    /// Request a transaction commit after the next batch of records from SourceTask::poll()
+    /// is processed.
+    fn commit_transaction(&self);
 
-    /// Signal a commit of the current transaction.
-    fn commit_transaction(&self) -> Result<(), ConnectException>;
+    /// Request a transaction commit after a source record is processed. The source record will be the
+    /// last record in the committed transaction.
+    ///
+    /// If a task requests that the last record in a batch that it returns from SourceTask::poll()
+    /// be committed by invoking this method, and also requests that that same batch be aborted by
+    /// invoking abort_transaction(), the record-based operation (in this case, committing
+    /// the transaction) will take precedence.
+    ///
+    /// # Arguments
+    /// * `record` - the record to commit the transaction after; may not be null.
+    fn commit_transaction_with_record(&self, record: &SourceRecord);
 
-    /// Signal an abort of the current transaction.
-    fn abort_transaction(&self) -> Result<(), ConnectException>;
+    /// Requests a transaction abort after the next batch of records from SourceTask::poll(). All of
+    /// the records in that transaction will be discarded and will not appear in a committed transaction.
+    /// However, offsets for that transaction will still be committed so than the records in that transaction
+    /// are not reprocessed. If the data should instead be reprocessed, the task should not invoke this method
+    /// and should instead throw an exception.
+    fn abort_transaction(&self);
+
+    /// Requests a transaction abort after a source record is processed. The source record will be the
+    /// last record in the aborted transaction. All of the records in that transaction will be discarded
+    /// and will not appear in a committed transaction. However, offsets for that transaction will still
+    /// be committed so that the records in that transaction are not reprocessed. If the data should be
+    /// reprocessed, the task should not invoke this method and should instead throw an exception.
+    ///
+    /// If a task requests that the last record in a batch that it returns from SourceTask::poll()
+    /// be aborted by invoking this method, and also requests that that same batch be committed by
+    /// invoking commit_transaction(), the record-based operation (in this case, aborting
+    /// the transaction) will take precedence.
+    ///
+    /// # Arguments
+    /// * `record` - the record to abort the transaction after; may not be null.
+    fn abort_transaction_with_record(&self, record: &SourceRecord);
 }
 
 // ============================================================================================

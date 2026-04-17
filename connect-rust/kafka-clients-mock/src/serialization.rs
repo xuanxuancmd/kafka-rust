@@ -2,7 +2,7 @@
 //!
 //! This module provides mock implementations of Serializer and Deserializer for testing purposes.
 
-use kafka_clients_trait::serialization::{
+use common_trait::serialization::{
     DeserializationError, Deserializer, SerializationError, Serializer,
 };
 use std::sync::{Arc, Mutex};

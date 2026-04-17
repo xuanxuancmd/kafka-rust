@@ -42,6 +42,24 @@ impl ConverterType {
             ConverterType::Header => "header",
         }
     }
+
+    /// Parse from string representation (case-insensitive).
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - the string to parse
+    ///
+    /// # Returns
+    ///
+    /// The matching ConverterType, or None if not found
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "key" => Some(ConverterType::Key),
+            "value" => Some(ConverterType::Value),
+            "header" => Some(ConverterType::Header),
+            _ => None,
+        }
+    }
 }
 
 /// The Converter interface provides support for translating between Kafka Connect's runtime data format
@@ -268,6 +286,23 @@ mod tests {
         assert_eq!(ConverterType::Key.as_str(), "key");
         assert_eq!(ConverterType::Value.as_str(), "value");
         assert_eq!(ConverterType::Header.as_str(), "header");
+    }
+
+    #[test]
+    fn test_converter_type_from_str() {
+        assert_eq!(ConverterType::from_str("key"), Some(ConverterType::Key));
+        assert_eq!(ConverterType::from_str("value"), Some(ConverterType::Value));
+        assert_eq!(
+            ConverterType::from_str("header"),
+            Some(ConverterType::Header)
+        );
+        assert_eq!(ConverterType::from_str("KEY"), Some(ConverterType::Key));
+        assert_eq!(ConverterType::from_str("Value"), Some(ConverterType::Value));
+        assert_eq!(
+            ConverterType::from_str("HEADER"),
+            Some(ConverterType::Header)
+        );
+        assert_eq!(ConverterType::from_str("invalid"), None);
     }
 
     #[test]

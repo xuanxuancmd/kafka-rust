@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use crate::policy::{DefaultReplicationPolicy, IdentityReplicationPolicy, ReplicationPolicy};
-use kafka_clients_trait::admin::KafkaAdminSync;
+use common_trait::admin::KafkaAdminSync;
 
 /// 配置键常量
 pub mod config_keys {

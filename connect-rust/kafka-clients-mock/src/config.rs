@@ -2,7 +2,7 @@
 //!
 //! This module provides a mock wrapper around ConfigDef for testing purposes.
 
-use kafka_clients_trait::config::{ConfigDef, ConfigImportance, ConfigValue};
+use common_trait::config::{ConfigDef, ConfigImportance, ConfigValue};
 
 /// Mock configuration wrapper for testing.
 pub struct MockConfigDef {

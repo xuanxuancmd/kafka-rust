@@ -2,7 +2,7 @@
 //!
 //! This module provides a mock implementation of KafkaAdmin for testing purposes.
 
-use kafka_clients_trait::admin::{
+use common_trait::admin::{
     KafkaAdmin, NewTopic, TopicDescription, PartitionMetadata, Node, ClusterDescription,
     ConsumerGroupDescription, MemberDescription,
 };

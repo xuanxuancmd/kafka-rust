@@ -8,8 +8,8 @@ use crate::errors::error_reporter::ErrorReporter;
 use crate::errors::processing_context::ProcessingContext;
 use crate::errors::stage::Stage;
 use async_trait::async_trait;
-use kafka_clients_trait::admin::AdminClient;
-use kafka_clients_trait::producer::{Producer, ProducerRecord, RecordMetadata};
+use common_trait::admin::AdminClient;
+use common_trait::producer::{Producer, ProducerRecord, RecordMetadata};
 use std::sync::Arc;
 use tracing::error;
 

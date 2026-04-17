@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use connect_runtime::util::{Callback, KafkaBasedLog};
-use kafka_clients_trait::admin::TopicAdmin;
-use kafka_clients_trait::consumer::{ConsumerRecord, TopicPartition};
+use common_trait::admin::TopicAdmin;
+use common_trait::consumer::{ConsumerRecord, TopicPartition};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
@@ -82,7 +82,7 @@ impl OffsetSyncStore {
     /// Create backing store for offset syncs
     fn create_backing_store(
         config: &crate::mirror_checkpoint_config::MirrorCheckpointConfig,
-        consumer: &Arc<dyn kafka_clients_trait::consumer::Consumer<Vec<u8>, Vec<u8>>>,
+        consumer: &Arc<dyn common_trait::consumer::Consumer<Vec<u8>, Vec<u8>>>,
         admin: &Arc<dyn TopicAdmin>,
     ) -> Result<Box<dyn KafkaBasedLog<Vec<u8>, Vec<u8>>>> {
         // Create a callback for handling records
@@ -511,7 +511,7 @@ struct OffsetSyncStoreCallback {
 impl Callback for OffsetSyncStoreCallback {
     fn on_completion(
         &self,
-        _metadata: Option<kafka_clients_trait::producer::RecordMetadata>,
+        _metadata: Option<common_trait::producer::RecordMetadata>,
         _error: Option<String>,
     ) {
         // Handle completion

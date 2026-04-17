@@ -18,6 +18,7 @@ use crate::error::{ConnectException, DataException};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Schema type enumeration defining the basic data types supported by Connect schemas.
@@ -791,6 +792,95 @@ impl SchemaBuilder {
         self
     }
 
+    /// Sets the default value for this schema.
+    ///
+    /// # Arguments
+    /// * `value` - The default value to set
+    ///
+    /// # Returns
+    /// * Self for method chaining
+    ///
+    /// # Errors
+    /// * Returns ConnectException if:
+    ///   - Default value has already been set
+    ///   - Schema type has not been specified
+    ///   - The value does not match the schema type
+    pub fn default_value(
+        mut self,
+        value: Box<dyn Any + Send + Sync>,
+    ) -> Result<Self, ConnectException> {
+        // Check if default value has already been set
+        if self.default_value.is_some() {
+            return Err(ConnectException::new(
+                "Invalid SchemaBuilder call: default value has already been set".to_string(),
+            ));
+        }
+
+        // Check that type has been specified
+        if self.type_.is_none() {
+            return Err(ConnectException::new(
+                "Invalid SchemaBuilder call: type must be specified to set default value"
+                    .to_string(),
+            ));
+        }
+
+        // Validate the value against the schema
+        // We need to create a temporary schema to validate
+        let type_ = self.type_.unwrap();
+        let temp_schema = ConnectSchema::new(type_);
+
+        if let Err(e) = ConnectSchema::validate_value_static(&temp_schema, value.as_ref()) {
+            return Err(ConnectException::new(format!(
+                "Invalid default value: {}",
+                e
+            )));
+        }
+
+        self.default_value = Some(value);
+        Ok(self)
+    }
+
+    /// Private helper method to check if a field can be set.
+    ///
+    /// # Arguments
+    /// * `field_name` - Name of the field being set
+    /// * `is_set` - Whether the field has already been set
+    ///
+    /// # Errors
+    /// * Returns ConnectException if the field has already been set
+    fn check_can_set(field_name: &str, is_set: bool) -> Result<(), ConnectException> {
+        if is_set {
+            return Err(ConnectException::new(format!(
+                "Invalid SchemaBuilder call: {} has already been set",
+                field_name
+            )));
+        }
+        Ok(())
+    }
+
+    /// Private helper method to check if a required field is not null.
+    ///
+    /// # Arguments
+    /// * `field_name` - Name of the field being checked
+    /// * `is_some` - Whether the field has a value
+    /// * `field_to_set` - Name of the field being set
+    ///
+    /// # Errors
+    /// * Returns ConnectException if the required field is null
+    fn check_not_null(
+        field_name: &str,
+        is_some: bool,
+        field_to_set: &str,
+    ) -> Result<(), ConnectException> {
+        if !is_some {
+            return Err(ConnectException::new(format!(
+                "Invalid SchemaBuilder call: {} must be specified to set {}",
+                field_name, field_to_set
+            )));
+        }
+        Ok(())
+    }
+
     pub fn build(self) -> Result<Arc<ConnectSchema>, ConnectException> {
         let type_ = self
             .type_
@@ -800,6 +890,7 @@ impl SchemaBuilder {
             Type::Struct => {
                 let mut schema = ConnectSchema::struct_(self.fields);
                 schema.optional = self.optional;
+                schema.default_value = self.default_value;
                 schema.name = self.name;
                 schema.version = self.version;
                 schema.doc = self.doc;
@@ -812,6 +903,7 @@ impl SchemaBuilder {
                     .ok_or_else(|| ConnectException::new("Value schema required for ARRAY"))?;
                 let mut schema = ConnectSchema::array(value_schema);
                 schema.optional = self.optional;
+                schema.default_value = self.default_value;
                 schema.name = self.name;
                 schema.version = self.version;
                 schema.doc = self.doc;
@@ -827,6 +919,7 @@ impl SchemaBuilder {
                     .ok_or_else(|| ConnectException::new("Value schema required for MAP"))?;
                 let mut schema = ConnectSchema::map(key_schema, value_schema);
                 schema.optional = self.optional;
+                schema.default_value = self.default_value;
                 schema.name = self.name;
                 schema.version = self.version;
                 schema.doc = self.doc;
@@ -836,6 +929,7 @@ impl SchemaBuilder {
             _ => {
                 let mut schema = ConnectSchema::new(type_);
                 schema.optional = self.optional;
+                schema.default_value = self.default_value;
                 schema.name = self.name;
                 schema.version = self.version;
                 schema.doc = self.doc;
@@ -849,10 +943,75 @@ impl SchemaBuilder {
 }
 
 /// Struct represents an instance of a STRUCT schema.
-#[derive(Debug)]
 pub struct Struct {
     schema: Arc<ConnectSchema>,
     values: HashMap<String, Box<dyn Any + Send + Sync>>,
+}
+
+impl fmt::Debug for Struct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Struct{{")?;
+        let mut first = true;
+        if let Ok(fields) = self.schema.fields() {
+            for field in &fields {
+                if let Some(value) = self.get(field.name()) {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(f, "{}=", field.name())?;
+                    format_value(value, f)?;
+                }
+            }
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Display for Struct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Struct{{")?;
+        let mut first = true;
+        if let Ok(fields) = self.schema.fields() {
+            for field in &fields {
+                if let Some(value) = self.get(field.name()) {
+                    if !first {
+                        write!(f, ",")?;
+                    }
+                    first = false;
+                    write!(f, "{}=", field.name())?;
+                    format_value(value, f)?;
+                }
+            }
+        }
+        write!(f, "}}")
+    }
+}
+
+fn format_value(value: &dyn Any, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if let Some(v) = value.downcast_ref::<i8>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<i16>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<i32>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<i64>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<f32>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<f64>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<bool>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<String>() {
+        write!(f, "{}", v)
+    } else if let Some(v) = value.downcast_ref::<Vec<u8>>() {
+        write!(f, "{:?}", v)
+    } else if let Some(v) = value.downcast_ref::<Struct>() {
+        write!(f, "{}", v)
+    } else {
+        write!(f, "{{unknown}}")
+    }
 }
 
 impl Clone for Struct {
@@ -898,6 +1057,10 @@ impl Struct {
     }
 
     pub fn get(&self, field_name: &str) -> Option<&dyn Any> {
+        self.values.get(field_name).map(|v| v.as_ref() as &dyn Any)
+    }
+
+    pub fn get_without_default(&self, field_name: &str) -> Option<&dyn Any> {
         self.values.get(field_name).map(|v| v.as_ref() as &dyn Any)
     }
 
@@ -964,6 +1127,31 @@ impl Struct {
             .ok_or_else(|| DataException::new(format!("Field {} is not Vec<u8>", field_name)))
     }
 
+    pub fn get_array(
+        &self,
+        field_name: &str,
+    ) -> Result<&Vec<Box<dyn Any + Send + Sync>>, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>())
+            .ok_or_else(|| DataException::new(format!("Field {} is not Vec", field_name)))
+    }
+
+    pub fn get_map(
+        &self,
+        field_name: &str,
+    ) -> Result<&HashMap<String, Box<dyn Any + Send + Sync>>, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>())
+            .ok_or_else(|| DataException::new(format!("Field {} is not HashMap", field_name)))
+    }
+
+    pub fn get_struct(&self, field_name: &str) -> Result<Struct, DataException> {
+        self.get(field_name)
+            .and_then(|v| v.downcast_ref::<Struct>())
+            .cloned()
+            .ok_or_else(|| DataException::new(format!("Field {} is not Struct", field_name)))
+    }
+
     pub fn validate(&self) -> Result<(), DataException> {
         for field in self.schema.fields()? {
             if let Some(value) = self.get(field.name()) {
@@ -979,21 +1167,194 @@ impl Struct {
     }
 
     pub fn equals(&self, other: &Struct) -> bool {
+        // Compare schema references
         if Arc::ptr_eq(&self.schema, &other.schema) {
-            return true;
+            // Same schema, compare values
+            return self.compare_values(&other.values);
         }
 
+        // Different schemas - compare schema type and fields
         if self.schema.type_() != other.schema.type_() {
             return false;
         }
 
-        // Simple comparison: check same fields exist
-        let self_fields = self.values.keys().collect::<std::collections::HashSet<_>>();
-        let other_fields = other
-            .values
-            .keys()
-            .collect::<std::collections::HashSet<_>>();
-        self_fields == other_fields
+        // Compare schema fields
+        let self_fields = match self.schema.fields() {
+            Ok(fields) => fields,
+            Err(_) => return false,
+        };
+        let other_fields = match other.schema.fields() {
+            Ok(fields) => fields,
+            Err(_) => return false,
+        };
+
+        if self_fields.len() != other_fields.len() {
+            return false;
+        }
+
+        for (self_field, other_field) in self_fields.iter().zip(other_fields.iter()) {
+            if self_field.name() != other_field.name() {
+                return false;
+            }
+            if self_field.index() != other_field.index() {
+                return false;
+            }
+        }
+
+        // Compare values
+        self.compare_values(&other.values)
+    }
+
+    fn compare_values(&self, other_values: &HashMap<String, Box<dyn Any + Send + Sync>>) -> bool {
+        // Compare number of fields
+        if self.values.len() != other_values.len() {
+            return false;
+        }
+
+        // Compare each field value
+        for (field_name, self_value) in &self.values {
+            if let Some(other_value) = other_values.get(field_name) {
+                if !Self::compare_any_values(self_value.as_ref(), other_value.as_ref()) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn compare_any_values(a: &dyn Any, b: &dyn Any) -> bool {
+        // Compare primitives
+        if let (Some(a_i8), Some(b_i8)) = (a.downcast_ref::<i8>(), b.downcast_ref::<i8>()) {
+            return a_i8 == b_i8;
+        }
+        if let (Some(a_i16), Some(b_i16)) = (a.downcast_ref::<i16>(), b.downcast_ref::<i16>()) {
+            return a_i16 == b_i16;
+        }
+        if let (Some(a_i32), Some(b_i32)) = (a.downcast_ref::<i32>(), b.downcast_ref::<i32>()) {
+            return a_i32 == b_i32;
+        }
+        if let (Some(a_i64), Some(b_i64)) = (a.downcast_ref::<i64>(), b.downcast_ref::<i64>()) {
+            return a_i64 == b_i64;
+        }
+        if let (Some(a_f32), Some(b_f32)) = (a.downcast_ref::<f32>(), b.downcast_ref::<f32>()) {
+            return a_f32 == b_f32;
+        }
+        if let (Some(a_f64), Some(b_f64)) = (a.downcast_ref::<f64>(), b.downcast_ref::<f64>()) {
+            return a_f64 == b_f64;
+        }
+        if let (Some(a_bool), Some(b_bool)) = (a.downcast_ref::<bool>(), b.downcast_ref::<bool>()) {
+            return a_bool == b_bool;
+        }
+        if let (Some(a_string), Some(b_string)) =
+            (a.downcast_ref::<String>(), b.downcast_ref::<String>())
+        {
+            return a_string == b_string;
+        }
+        if let (Some(a_bytes), Some(b_bytes)) =
+            (a.downcast_ref::<Vec<u8>>(), b.downcast_ref::<Vec<u8>>())
+        {
+            return a_bytes == b_bytes;
+        }
+
+        // Compare complex types (simplified - just compare pointers for now)
+        // In a full implementation, we would recursively compare arrays, maps, and structs
+        if let (Some(_a_array), Some(_b_array)) = (
+            a.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>(),
+            b.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>(),
+        ) {
+            // For arrays, we would need to compare each element
+            // This is a simplified version
+            return false;
+        }
+        if let (Some(_a_map), Some(_b_map)) = (
+            a.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>(),
+            b.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>(),
+        ) {
+            // For maps, we would need to compare each key-value pair
+            // This is a simplified version
+            return false;
+        }
+        if let (Some(_a_struct), Some(_b_struct)) =
+            (a.downcast_ref::<Struct>(), b.downcast_ref::<Struct>())
+        {
+            // For structs, we would need to recursively compare
+            // This is a simplified version
+            return false;
+        }
+
+        false
+    }
+
+    pub fn hash_code(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+        // Hash schema pointer
+        let schema_ptr = Arc::as_ptr(&self.schema) as usize;
+        schema_ptr.hash(&mut hasher);
+
+        // Hash values
+        for (field_name, value) in &self.values {
+            field_name.hash(&mut hasher);
+            Self::hash_any_value(value.as_ref(), &mut hasher);
+        }
+
+        hasher.finish()
+    }
+
+    fn hash_any_value(value: &dyn Any, hasher: &mut impl Hasher) {
+        // Hash primitives
+        if let Some(v) = value.downcast_ref::<i8>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<i16>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<i32>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<i64>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<f32>() {
+            v.to_bits().hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<f64>() {
+            v.to_bits().hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<bool>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<String>() {
+            v.hash(hasher);
+        } else if let Some(v) = value.downcast_ref::<Vec<u8>>() {
+            v.hash(hasher);
+        } else {
+            // For complex types, hash pointer (simplified)
+            let ptr = (value as *const dyn Any) as *const () as usize;
+            ptr.hash(hasher);
+        }
+    }
+
+    fn format_value(value: &dyn Any, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(v) = value.downcast_ref::<i8>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<i16>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<i32>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<i64>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<f32>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<f64>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<bool>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<String>() {
+            write!(f, "{}", v)
+        } else if let Some(v) = value.downcast_ref::<Vec<u8>>() {
+            write!(f, "{:?}", v)
+        } else if let Some(v) = value.downcast_ref::<Struct>() {
+            write!(f, "{}", v)
+        } else {
+            write!(f, "{{unknown}}")
+        }
     }
 }
 
@@ -1094,77 +1455,1282 @@ impl SchemaAndValue {
 /// Values is a utility for converting Connect values from one form to another.
 pub struct Values;
 
+// Constants for Values
+const MILLIS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
+const NULL_VALUE: &str = "null";
+const ISO_8601_DATE_FORMAT_PATTERN: &str = "yyyy-MM-dd";
+const ISO_8601_TIME_FORMAT_PATTERN: &str = "HH:mm:ss.SSS'Z'";
+const ISO_8601_TIMESTAMP_FORMAT_PATTERN: &str = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+
 impl Values {
     pub fn convert_to_boolean(
-        _schema: &dyn Schema,
-        value: &dyn Any,
-    ) -> Result<bool, DataException> {
-        value
-            .downcast_ref::<bool>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to boolean".to_string()))
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<bool>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(b) = value.downcast_ref::<bool>() {
+            return Ok(Some(*b));
+        }
+
+        if let Some(s) = value.downcast_ref::<String>() {
+            let parsed = Self::parse_string(Some(s.as_str()))?;
+            if let Some(v) = parsed.value() {
+                if let Some(b) = v.downcast_ref::<bool>() {
+                    return Ok(Some(*b));
+                }
+            }
+        }
+
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok(Some(long_val != 0))
     }
 
-    pub fn convert_to_byte(_schema: &dyn Schema, value: &dyn Any) -> Result<i8, DataException> {
-        value
-            .downcast_ref::<i8>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to byte".to_string()))
+    pub fn convert_to_byte(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i8>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(b) = value.downcast_ref::<i8>() {
+            return Ok(Some(*b));
+        }
+
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok(Some(long_val as i8))
     }
 
-    pub fn convert_to_short(_schema: &dyn Schema, value: &dyn Any) -> Result<i16, DataException> {
-        value
-            .downcast_ref::<i16>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to short".to_string()))
+    pub fn convert_to_short(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i16>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(s) = value.downcast_ref::<i16>() {
+            return Ok(Some(*s));
+        }
+
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok(Some(long_val as i16))
     }
 
-    pub fn convert_to_integer(_schema: &dyn Schema, value: &dyn Any) -> Result<i32, DataException> {
-        value
-            .downcast_ref::<i32>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to integer".to_string()))
+    pub fn convert_to_integer(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i32>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(i) = value.downcast_ref::<i32>() {
+            return Ok(Some(*i));
+        }
+
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok(Some(long_val as i32))
     }
 
-    pub fn convert_to_long(_schema: &dyn Schema, value: &dyn Any) -> Result<i64, DataException> {
-        value
-            .downcast_ref::<i64>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to long".to_string()))
+    pub fn convert_to_long(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i64>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(l) = value.downcast_ref::<i64>() {
+            return Ok(Some(*l));
+        }
+
+        Self::as_long(value, schema, None).map(Some)
     }
 
-    pub fn convert_to_float(_schema: &dyn Schema, value: &dyn Any) -> Result<f32, DataException> {
-        value
-            .downcast_ref::<f32>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to float".to_string()))
+    pub fn convert_to_float(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<f32>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(f) = value.downcast_ref::<f32>() {
+            return Ok(Some(*f));
+        }
+
+        let double_val = Self::as_double(value, schema, None)?;
+        Ok(Some(double_val as f32))
     }
 
-    pub fn convert_to_double(_schema: &dyn Schema, value: &dyn Any) -> Result<f64, DataException> {
-        value
-            .downcast_ref::<f64>()
-            .copied()
-            .ok_or_else(|| DataException::new("Cannot convert value to double".to_string()))
+    pub fn convert_to_double(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<f64>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        if let Some(d) = value.downcast_ref::<f64>() {
+            return Ok(Some(*d));
+        }
+
+        Self::as_double(value, schema, None).map(Some)
     }
 
     pub fn convert_to_string(
-        _schema: &dyn Schema,
-        value: &dyn Any,
-    ) -> Result<String, DataException> {
-        value
-            .downcast_ref::<String>()
-            .cloned()
-            .ok_or_else(|| DataException::new("Cannot convert value to string".to_string()))
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<String>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut sb = String::new();
+        Self::append(&mut sb, value, false);
+        Ok(Some(sb))
     }
 
-    pub fn infer_schema(_value: &dyn Any) -> Option<Arc<ConnectSchema>> {
-        // Simplified implementation - in real code would inspect the value type
+    pub fn convert_to_list(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<Vec<Box<dyn Any + Send + Sync>>>, DataException> {
+        Self::convert_to_array_internal(schema, value)
+    }
+
+    pub fn convert_to_map(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<HashMap<String, Box<dyn Any + Send + Sync>>>, DataException> {
+        Self::convert_to_map_internal(schema, value)
+    }
+
+    pub fn convert_to_struct(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<Struct>, DataException> {
+        Self::convert_to_struct_internal(schema, value)
+    }
+
+    pub fn convert_to_date(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i32>, DataException> {
+        let value = value.ok_or_else(|| {
+            DataException::new(
+                "Unable to convert a null value to a schema that requires a value".to_string(),
+            )
+        })?;
+        Self::convert_to_date_internal(schema, value).map(Some)
+    }
+
+    pub fn convert_to_time(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i32>, DataException> {
+        let value = value.ok_or_else(|| {
+            DataException::new(
+                "Unable to convert a null value to a schema that requires a value".to_string(),
+            )
+        })?;
+        Self::convert_to_time_internal(schema, value).map(Some)
+    }
+
+    pub fn convert_to_timestamp(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<i64>, DataException> {
+        let value = value.ok_or_else(|| {
+            DataException::new(
+                "Unable to convert a null value to a schema that requires a value".to_string(),
+            )
+        })?;
+        Self::convert_to_timestamp_internal(schema, value).map(Some)
+    }
+
+    pub fn convert_to_decimal(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+        scale: i32,
+    ) -> Result<Option<(i64, i32)>, DataException> {
+        let value = value.ok_or_else(|| {
+            DataException::new(
+                "Unable to convert a null value to a schema that requires a value".to_string(),
+            )
+        })?;
+        Self::convert_to_decimal_internal(schema, value, scale).map(Some)
+    }
+
+    pub fn infer_schema(value: Option<&dyn Any>) -> Option<Arc<ConnectSchema>> {
+        let value = value?;
+
+        if value.is::<String>() {
+            Some(Arc::new(STRING_SCHEMA))
+        } else if value.is::<bool>() {
+            Some(Arc::new(BOOLEAN_SCHEMA))
+        } else if value.is::<i8>() {
+            Some(Arc::new(INT8_SCHEMA))
+        } else if value.is::<i16>() {
+            Some(Arc::new(INT16_SCHEMA))
+        } else if value.is::<i32>() {
+            Some(Arc::new(INT32_SCHEMA))
+        } else if value.is::<i64>() {
+            Some(Arc::new(INT64_SCHEMA))
+        } else if value.is::<f32>() {
+            Some(Arc::new(FLOAT32_SCHEMA))
+        } else if value.is::<f64>() {
+            Some(Arc::new(FLOAT64_SCHEMA))
+        } else if value.is::<Vec<u8>>() {
+            Some(Arc::new(BYTES_SCHEMA))
+        } else if value.is::<Vec<Box<dyn Any + Send + Sync>>>() {
+            Self::infer_list_schema(value.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>())
+        } else if value.is::<HashMap<String, Box<dyn Any + Send + Sync>>>() {
+            Self::infer_map_schema(
+                value.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>(),
+            )
+        } else if value.is::<Struct>() {
+            value
+                .downcast_ref::<Struct>()
+                .map(|s| Arc::clone(&s.schema()))
+        } else {
+            None
+        }
+    }
+
+    pub fn parse_string(value: Option<&str>) -> Result<SchemaAndValue, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(SchemaAndValue::new(None, None)),
+        };
+
+        if value.is_empty() {
+            return Ok(SchemaAndValue::new(
+                Some(Arc::new(STRING_SCHEMA)),
+                Some(Box::new(value.to_string()) as Box<dyn Any + Send + Sync>),
+            ));
+        }
+
+        let parser = Parser::new(value.to_string());
+        let value_parser = ValueParser::new(parser);
+        value_parser.parse(false)
+    }
+
+    // Helper methods
+    fn as_long(
+        value: &dyn Any,
+        schema: Option<&dyn Schema>,
+        _error: Option<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Result<i64, DataException> {
+        // Try to convert as number
+        if let Some(n) = value.downcast_ref::<i8>() {
+            return Ok(*n as i64);
+        }
+        if let Some(n) = value.downcast_ref::<i16>() {
+            return Ok(*n as i64);
+        }
+        if let Some(n) = value.downcast_ref::<i32>() {
+            return Ok(*n as i64);
+        }
+        if let Some(n) = value.downcast_ref::<i64>() {
+            return Ok(*n);
+        }
+        if let Some(n) = value.downcast_ref::<f32>() {
+            return Ok(*n as i64);
+        }
+        if let Some(n) = value.downcast_ref::<f64>() {
+            return Ok(*n as i64);
+        }
+
+        // Try to parse as string
+        if let Some(s) = value.downcast_ref::<String>() {
+            // Try to parse as integer
+            if let Ok(n) = s.parse::<i64>() {
+                return Ok(n);
+            }
+        }
+
+        // Handle logical types (Date, Time, Timestamp)
+        if let Some(schema) = schema {
+            if let Some(name) = schema.name() {
+                if name == Date::LOGICAL_NAME {
+                    // Date is stored as i32 (days since epoch)
+                    if let Some(days) = value.downcast_ref::<i32>() {
+                        return Ok(*days as i64);
+                    }
+                } else if name == Time::LOGICAL_NAME {
+                    // Time is stored as i32 (milliseconds since midnight)
+                    if let Some(millis) = value.downcast_ref::<i32>() {
+                        return Ok(*millis as i64);
+                    }
+                } else if name == Timestamp::LOGICAL_NAME {
+                    // Timestamp is stored as i64 (milliseconds since epoch)
+                    if let Some(millis) = value.downcast_ref::<i64>() {
+                        return Ok(*millis);
+                    }
+                }
+            }
+        }
+
+        Err(DataException::new(format!(
+            "Unable to convert value to long"
+        )))
+    }
+
+    fn as_double(
+        value: &dyn Any,
+        schema: Option<&dyn Schema>,
+        _error: Option<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Result<f64, DataException> {
+        // Try to convert as number
+        if let Some(n) = value.downcast_ref::<f32>() {
+            return Ok(*n as f64);
+        }
+        if let Some(n) = value.downcast_ref::<f64>() {
+            return Ok(*n);
+        }
+
+        // Try as long first, then convert to double
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok(long_val as f64)
+    }
+
+    fn append(sb: &mut String, value: &dyn Any, embedded: bool) {
+        if value.is::<()>() {
+            sb.push_str(NULL_VALUE);
+        } else if let Some(n) = value.downcast_ref::<i8>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(n) = value.downcast_ref::<i16>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(n) = value.downcast_ref::<i32>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(n) = value.downcast_ref::<i64>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(n) = value.downcast_ref::<f32>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(n) = value.downcast_ref::<f64>() {
+            sb.push_str(&n.to_string());
+        } else if let Some(b) = value.downcast_ref::<bool>() {
+            sb.push_str(&b.to_string());
+        } else if let Some(s) = value.downcast_ref::<String>() {
+            if embedded {
+                let escaped = Self::escape(s);
+                sb.push('"');
+                sb.push_str(&escaped);
+                sb.push('"');
+            } else {
+                sb.push_str(s);
+            }
+        } else if let Some(bytes) = value.downcast_ref::<Vec<u8>>() {
+            // Simple hex encoding instead of base64 (to avoid dependency)
+            let encoded: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            if embedded {
+                sb.push('"');
+                sb.push_str(&encoded);
+                sb.push('"');
+            } else {
+                sb.push_str(&encoded);
+            }
+        } else if let Some(list) = value.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>() {
+            sb.push('[');
+            Self::append_iterable(sb, list.iter());
+            sb.push(']');
+        } else if let Some(map) =
+            value.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>()
+        {
+            sb.push('{');
+            let mut first = true;
+            for (key, val) in map {
+                if first {
+                    first = false;
+                } else {
+                    sb.push(',');
+                }
+                Self::append(sb, key, true);
+                sb.push(':');
+                Self::append(sb, val, true);
+            }
+            sb.push('}');
+        } else if let Some(struct_val) = value.downcast_ref::<Struct>() {
+            let schema = struct_val.schema();
+            let mut first = true;
+            sb.push('{');
+            match schema.fields() {
+                Ok(fields) => {
+                    for field in &fields {
+                        if first {
+                            first = false;
+                        } else {
+                            sb.push(',');
+                        }
+                        Self::append(sb, &field.name(), true);
+                        sb.push(':');
+                        if let Some(v) = struct_val.get(field.name()) {
+                            Self::append(sb, v, true);
+                        } else {
+                            sb.push_str(NULL_VALUE);
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+            sb.push('}');
+        } else {
+            // For map entries, handle specially
+            // This is a simplified version - in real code would handle Map.Entry
+            sb.push_str("unknown");
+        }
+    }
+
+    fn append_iterable<'a, I>(sb: &mut String, iter: I)
+    where
+        I: Iterator<Item = &'a Box<dyn Any + Send + Sync>>,
+    {
+        let mut first = true;
+        for item in iter {
+            if first {
+                first = false;
+            } else {
+                sb.push(',');
+            }
+            Self::append(sb, item.as_ref() as &dyn Any, true);
+        }
+    }
+
+    fn escape(value: &str) -> String {
+        // Replace backslashes with double backslashes, then replace quotes with escaped quotes
+        value.replace("\\", "\\\\").replace("\"", "\\\"")
+    }
+
+    fn date_format_for(_value: i64) -> &'static str {
+        // Simplified - in real code would determine format based on value
+        ISO_8601_TIMESTAMP_FORMAT_PATTERN
+    }
+
+    // Internal conversion methods
+    fn convert_to_array_internal(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<Vec<Box<dyn Any + Send + Sync>>>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => {
+                return Err(DataException::new(
+                    "Unable to convert a null value to a schema that requires a value".to_string(),
+                ))
+            }
+        };
+
+        if let Some(s) = value.downcast_ref::<String>() {
+            let parsed = Self::parse_string(Some(s.as_str()))?;
+            if let Some(v) = parsed.value() {
+                if let Some(list) = v.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>() {
+                    // Can't clone Vec<Box<dyn Any>>, so create a new one
+                    let mut new_list: Vec<Box<dyn Any + Send + Sync>> = Vec::new();
+                    for item in list {
+                        // Just clone the reference - in real code would deep clone
+                        new_list.push(item.clone());
+                    }
+                    return Ok(Some(new_list));
+                }
+            }
+        }
+
+        if let Some(list) = value.downcast_ref::<Vec<Box<dyn Any + Send + Sync>>>() {
+            // Can't clone Vec<Box<dyn Any>>, so create a new one
+            let mut new_list: Vec<Box<dyn Any + Send + Sync>> = Vec::new();
+            for item in list {
+                new_list.push(item.clone());
+            }
+            return Ok(Some(new_list));
+        }
+
+        Err(DataException::new(format!(
+            "Unable to convert value to array"
+        )))
+    }
+
+    fn convert_to_map_internal(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<HashMap<String, Box<dyn Any + Send + Sync>>>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => {
+                return Err(DataException::new(
+                    "Unable to convert a null value to a schema that requires a value".to_string(),
+                ))
+            }
+        };
+
+        if let Some(s) = value.downcast_ref::<String>() {
+            let parsed = Self::parse_string(Some(s.as_str()))?;
+            if let Some(v) = parsed.value() {
+                if let Some(map) = v.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>() {
+                    // Can't clone HashMap, so create a new one
+                    let mut new_map: HashMap<String, Box<dyn Any + Send + Sync>> = HashMap::new();
+                    for (key, val) in map {
+                        new_map.insert(key.clone(), val.clone());
+                    }
+                    return Ok(Some(new_map));
+                }
+            }
+        }
+
+        if let Some(map) = value.downcast_ref::<HashMap<String, Box<dyn Any + Send + Sync>>>() {
+            // Can't clone HashMap, so create a new one
+            let mut new_map: HashMap<String, Box<dyn Any + Send + Sync>> = HashMap::new();
+            for (key, val) in map {
+                new_map.insert(key.clone(), val.clone());
+            }
+            return Ok(Some(new_map));
+        }
+
+        Err(DataException::new(format!(
+            "Unable to convert value to map"
+        )))
+    }
+
+    fn convert_to_struct_internal(
+        schema: Option<&dyn Schema>,
+        value: Option<&dyn Any>,
+    ) -> Result<Option<Struct>, DataException> {
+        let value = match value {
+            Some(v) => v,
+            None => {
+                return Err(DataException::new(
+                    "Unable to convert a null value to a schema that requires a value".to_string(),
+                ))
+            }
+        };
+
+        if let Some(struct_val) = value.downcast_ref::<Struct>() {
+            return Ok(Some(struct_val.clone()));
+        }
+
+        Err(DataException::new(format!(
+            "Unable to convert value to struct"
+        )))
+    }
+
+    fn convert_to_date_internal(
+        schema: Option<&dyn Schema>,
+        value: &dyn Any,
+    ) -> Result<i32, DataException> {
+        // Simplified implementation - in real code would handle Date logical type
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok((long_val / MILLIS_PER_DAY) as i32)
+    }
+
+    fn convert_to_time_internal(
+        schema: Option<&dyn Schema>,
+        value: &dyn Any,
+    ) -> Result<i32, DataException> {
+        // Simplified implementation - in real code would handle Time logical type
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok((long_val % MILLIS_PER_DAY) as i32)
+    }
+
+    fn convert_to_timestamp_internal(
+        schema: Option<&dyn Schema>,
+        value: &dyn Any,
+    ) -> Result<i64, DataException> {
+        // Simplified implementation - in real code would handle Timestamp logical type
+        Self::as_long(value, schema, None)
+    }
+
+    fn convert_to_decimal_internal(
+        schema: Option<&dyn Schema>,
+        value: &dyn Any,
+        scale: i32,
+    ) -> Result<(i64, i32), DataException> {
+        // Simplified implementation - uses scaled integers
+        // In real code would handle BigDecimal conversion
+        let long_val = Self::as_long(value, schema, None)?;
+        Ok((long_val, scale))
+    }
+
+    fn infer_list_schema(
+        list: Option<&Vec<Box<dyn Any + Send + Sync>>>,
+    ) -> Option<Arc<ConnectSchema>> {
+        let list = list?;
+        if list.is_empty() {
+            return None;
+        }
+
+        let mut detector = SchemaDetector::new();
+        for element in list {
+            if !detector.can_detect(Some(element.as_ref() as &dyn Any)) {
+                return None;
+            }
+        }
+
+        let element_schema = detector.schema()?;
+        Some(Arc::new(ConnectSchema::array(element_schema)))
+    }
+
+    fn infer_map_schema(
+        map: Option<&HashMap<String, Box<dyn Any + Send + Sync>>>,
+    ) -> Option<Arc<ConnectSchema>> {
+        let map = map?;
+        if map.is_empty() {
+            return None;
+        }
+
+        let mut key_detector = SchemaDetector::new();
+        let mut value_detector = SchemaDetector::new();
+
+        for (key, value) in map {
+            if !key_detector.can_detect(Some(key as &dyn Any)) {
+                return None;
+            }
+            if !value_detector.can_detect(Some(value.as_ref() as &dyn Any)) {
+                return None;
+            }
+        }
+
+        let key_schema = key_detector.schema()?;
+        let value_schema = value_detector.schema()?;
+        Some(Arc::new(ConnectSchema::map(key_schema, value_schema)))
+    }
+}
+
+// Parser class for tokenization
+pub struct Parser {
+    original: String,
+    chars: Vec<char>,
+    position: usize,
+    next_token: Option<String>,
+    previous_token: Option<String>,
+}
+
+impl Parser {
+    pub fn new(original: String) -> Self {
+        let chars: Vec<char> = original.chars().collect();
+        Parser {
+            original,
+            chars,
+            position: 0,
+            next_token: None,
+            previous_token: None,
+        }
+    }
+
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn mark(&self) -> usize {
+        self.position - self.next_token.as_ref().map_or(0, |t| t.len())
+    }
+
+    pub fn rewind_to(&mut self, position: usize) {
+        self.position = position;
+        self.next_token = None;
+        self.previous_token = None;
+    }
+
+    pub fn original(&self) -> &str {
+        &self.original
+    }
+
+    pub fn has_next(&mut self) -> bool {
+        if self.next_token.is_some() {
+            return true;
+        }
+        self.can_consume_next_token()
+    }
+
+    fn can_consume_next_token(&self) -> bool {
+        self.position < self.chars.len()
+    }
+
+    pub fn next(&mut self) -> Option<String> {
+        if let Some(token) = self.next_token.take() {
+            self.previous_token = Some(token.clone());
+            return Some(token);
+        } else {
+            let token = self.consume_next_token()?;
+            self.previous_token = Some(token.clone());
+            Some(token)
+        }
+    }
+
+    pub fn next_n(&mut self, n: usize) -> Option<String> {
+        let start = self.mark();
+        for _ in 0..n {
+            if !self.has_next() {
+                self.rewind_to(start);
+                return None;
+            }
+            self.next();
+        }
+        Some(self.original[start..self.position()].to_string())
+    }
+
+    fn consume_next_token(&mut self) -> Option<String> {
+        let mut escaped = false;
+        let start = self.position;
+
+        while self.can_consume_next_token() {
+            let c = self.chars[self.position];
+            match c {
+                '\\' => {
+                    escaped = !escaped;
+                }
+                ':' | ',' | '{' | '}' | '[' | ']' | '"' => {
+                    if !escaped {
+                        if start < self.position {
+                            return Some(self.original[start..self.position].to_string());
+                        }
+                        self.position += 1;
+                        return Some(self.original[start..start + 1].to_string());
+                    }
+                    escaped = false;
+                }
+                _ => {
+                    escaped = false;
+                }
+            }
+            self.position += 1;
+        }
+
+        if start < self.position {
+            Some(self.original[start..self.position].to_string())
+        } else {
+            None
+        }
+    }
+
+    pub fn previous(&self) -> Option<&String> {
+        self.previous_token.as_ref()
+    }
+
+    pub fn can_consume(&mut self, expected: &str) -> bool {
+        self.can_consume_with_whitespace(expected, true)
+    }
+
+    pub fn can_consume_with_whitespace(&mut self, expected: &str, ignore_whitespace: bool) -> bool {
+        if self.is_next(expected, ignore_whitespace) {
+            self.next_token = None;
+            return true;
+        }
+        false
+    }
+
+    fn is_next(&mut self, expected: &str, ignore_whitespace: bool) -> bool {
+        if self.next_token.is_none() {
+            if !self.has_next() {
+                return false;
+            }
+            self.next_token = self.consume_next_token();
+        }
+
+        if ignore_whitespace {
+            while let Some(ref token) = self.next_token {
+                if token.trim().is_empty() && self.can_consume_next_token() {
+                    self.next_token = self.consume_next_token();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if let Some(ref token) = self.next_token {
+            if ignore_whitespace {
+                token.trim() == expected
+            } else {
+                token == expected
+            }
+        } else {
+            false
+        }
+    }
+}
+
+// SchemaDetector for schema inference
+pub struct SchemaDetector {
+    known_type: Option<Type>,
+    optional: bool,
+}
+
+impl SchemaDetector {
+    pub fn new() -> Self {
+        SchemaDetector {
+            known_type: None,
+            optional: false,
+        }
+    }
+
+    pub fn can_detect(&mut self, value: Option<&dyn Any>) -> bool {
+        let value = match value {
+            Some(v) => v,
+            None => {
+                self.optional = true;
+                return true;
+            }
+        };
+
+        let schema = match Values::infer_schema(Some(value)) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let type_ = schema.type_();
+        if self.known_type.is_none() {
+            self.known_type = Some(type_);
+        }
+
+        self.known_type == Some(type_)
+    }
+
+    pub fn schema(&self) -> Option<Arc<ConnectSchema>> {
+        let type_ = self.known_type?;
+        let mut builder = SchemaBuilder::new();
+        match type_ {
+            Type::Int8 => builder = SchemaBuilder::int8(),
+            Type::Int16 => builder = SchemaBuilder::int16(),
+            Type::Int32 => builder = SchemaBuilder::int32(),
+            Type::Int64 => builder = SchemaBuilder::int64(),
+            Type::Float32 => builder = SchemaBuilder::float32(),
+            Type::Float64 => builder = SchemaBuilder::float64(),
+            Type::Boolean => builder = SchemaBuilder::boolean(),
+            Type::String => builder = SchemaBuilder::string(),
+            Type::Bytes => builder = SchemaBuilder::bytes(),
+            Type::Array => return None, // Complex type, need value schema
+            Type::Map => return None,   // Complex type, need key/value schemas
+            Type::Struct => return None, // Complex type, need fields
+        }
+
+        if self.optional {
+            builder = builder.optional();
+        }
+
+        builder.build().ok()
+    }
+}
+
+// SchemaMerger for merging schemas
+pub struct SchemaMerger {
+    common: Option<Arc<ConnectSchema>>,
+    compatible: bool,
+}
+
+impl SchemaMerger {
+    pub fn new() -> Self {
+        SchemaMerger {
+            common: None,
+            compatible: true,
+        }
+    }
+
+    pub fn merge(&mut self, latest: &SchemaAndValue) {
+        if !self.compatible {
+            return;
+        }
+
+        let latest_schema = match latest.schema() {
+            Some(s) => s,
+            None => return,
+        };
+
+        if let Some(ref common) = self.common {
+            self.common = Self::merge_schemas(common, &latest_schema);
+            self.compatible = self.common.is_some();
+        } else {
+            self.common = Some(latest_schema);
+        }
+    }
+
+    pub fn has_common_schema(&self) -> bool {
+        self.common.is_some()
+    }
+
+    pub fn schema(&self) -> Option<Arc<ConnectSchema>> {
+        self.common.clone()
+    }
+
+    fn merge_schemas(
+        previous: &Arc<ConnectSchema>,
+        new_schema: &Arc<ConnectSchema>,
+    ) -> Option<Arc<ConnectSchema>> {
+        let prev_type = previous.type_();
+        let new_type = new_schema.type_();
+
+        if prev_type != new_type {
+            return Self::common_schema_for_type(&prev_type, previous, new_schema);
+        }
+
+        if previous.is_optional() == new_schema.is_optional() {
+            return Some(Arc::clone(previous));
+        }
+
         None
     }
 
-    pub fn parse_string(_value: &str) -> Result<SchemaAndValue, DataException> {
-        // Simplified implementation - in real code would parse the string
-        Ok(SchemaAndValue::new(None, None))
+    fn common_schema_for_type(
+        prev_type: &Type,
+        previous: &Arc<ConnectSchema>,
+        new_schema: &Arc<ConnectSchema>,
+    ) -> Option<Arc<ConnectSchema>> {
+        let new_type = new_schema.type_();
+
+        match prev_type {
+            Type::Int8 => match new_type {
+                Type::Int16 | Type::Int32 | Type::Int64 | Type::Float32 | Type::Float64 => {
+                    Some(Arc::clone(new_schema))
+                }
+                _ => None,
+            },
+            Type::Int16 => match new_type {
+                Type::Int8 => Some(Arc::clone(previous)),
+                Type::Int32 | Type::Int64 | Type::Float32 | Type::Float64 => {
+                    Some(Arc::clone(new_schema))
+                }
+                _ => None,
+            },
+            Type::Int32 => match new_type {
+                Type::Int8 | Type::Int16 => Some(Arc::clone(previous)),
+                Type::Int64 | Type::Float32 | Type::Float64 => Some(Arc::clone(new_schema)),
+                _ => None,
+            },
+            Type::Int64 => match new_type {
+                Type::Int8 | Type::Int16 | Type::Int32 => Some(Arc::clone(previous)),
+                Type::Float32 | Type::Float64 => Some(Arc::clone(new_schema)),
+                _ => None,
+            },
+            Type::Float32 => match new_type {
+                Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 => Some(Arc::clone(previous)),
+                Type::Float64 => Some(Arc::clone(new_schema)),
+                _ => None,
+            },
+            Type::Float64 => match new_type {
+                Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::Float32 => {
+                    Some(Arc::clone(previous))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+// ValueParser for parsing strings into SchemaAndValue
+pub struct ValueParser {
+    parser: Parser,
+}
+
+impl ValueParser {
+    pub fn new(parser: Parser) -> Self {
+        ValueParser { parser }
+    }
+
+    pub fn parse(&mut self, embedded: bool) -> Result<SchemaAndValue, DataException> {
+        if !self.parser.has_next() {
+            return Ok(SchemaAndValue::new(None, None));
+        }
+
+        if embedded && self.parser.can_consume("\"") {
+            return self.parse_quoted_string();
+        }
+
+        if self.parser.can_consume(NULL_VALUE) {
+            return Ok(SchemaAndValue::new(None, None));
+        }
+
+        if self.parser.can_consume("true") {
+            return Ok(SchemaAndValue::new(
+                Some(Arc::new(BOOLEAN_SCHEMA)),
+                Some(Box::new(true) as Box<dyn Any + Send + Sync>),
+            ));
+        }
+
+        if self.parser.can_consume("false") {
+            return Ok(SchemaAndValue::new(
+                Some(Arc::new(BOOLEAN_SCHEMA)),
+                Some(Box::new(false) as Box<dyn Any + Send + Sync>),
+            ));
+        }
+
+        let start_position = self.parser.mark();
+
+        // Try to parse as array or map
+        if self.parser.can_consume("[") {
+            return self.parse_array();
+        }
+
+        if self.parser.can_consume("{") {
+            return self.parse_map();
+        }
+
+        self.parser.rewind_to(start_position);
+
+        // Parse as token
+        let token = self
+            .parser
+            .next()
+            .ok_or_else(|| DataException::new("No token available".to_string()))?;
+        self.parse_next_token(embedded, &token)
+    }
+
+    fn parse_next_token(
+        &mut self,
+        embedded: bool,
+        token: &str,
+    ) -> Result<SchemaAndValue, DataException> {
+        let token = token.trim();
+
+        if token.is_empty() {
+            return Ok(SchemaAndValue::new(
+                Some(Arc::new(STRING_SCHEMA)),
+                Some(Box::new(token.to_string()) as Box<dyn Any + Send + Sync>),
+            ));
+        }
+
+        let first_char = token.chars().next();
+        let first_char_is_digit = first_char.map_or(false, |c| c.is_ascii_digit());
+
+        // Try to parse as number
+        if first_char_is_digit || first_char == Some('+') || first_char == Some('-') {
+            if let Ok(parsed) = self.parse_as_number(token) {
+                return Ok(parsed);
+            }
+        }
+
+        if embedded {
+            return Err(DataException::new(
+                "Failed to parse embedded value".to_string(),
+            ));
+        }
+
+        // Return as string
+        Ok(SchemaAndValue::new(
+            Some(Arc::new(STRING_SCHEMA)),
+            Some(Box::new(self.parser.original().to_string()) as Box<dyn Any + Send + Sync>),
+        ))
+    }
+
+    fn parse_quoted_string(&mut self) -> Result<SchemaAndValue, DataException> {
+        let mut content = String::new();
+
+        while self.parser.has_next() {
+            if self.parser.can_consume("\"") {
+                break;
+            }
+            if let Some(token) = self.parser.next() {
+                content.push_str(&token);
+            }
+        }
+
+        Ok(SchemaAndValue::new(
+            Some(Arc::new(STRING_SCHEMA)),
+            Some(Box::new(content) as Box<dyn Any + Send + Sync>),
+        ))
+    }
+
+    fn parse_array(&mut self) -> Result<SchemaAndValue, DataException> {
+        let mut result: Vec<Box<dyn Any + Send + Sync>> = Vec::new();
+        let mut element_schema = SchemaMerger::new();
+
+        while self.parser.has_next() {
+            if self.parser.can_consume("]") {
+                let list_schema = if element_schema.has_common_schema() {
+                    let schema = element_schema
+                        .schema()
+                        .ok_or_else(|| DataException::new("No common schema".to_string()))?;
+                    ConnectSchema::array(schema)
+                } else {
+                    ConnectSchema::array(Arc::new(STRING_SCHEMA))
+                };
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(list_schema)),
+                    Some(Box::new(result) as Box<dyn Any + Send + Sync>),
+                ));
+            }
+
+            if self.parser.can_consume(",") {
+                return Err(DataException::new(
+                    "Unable to parse an empty array element".to_string(),
+                ));
+            }
+
+            let element = self.parse(true)?;
+            element_schema.merge(&element);
+            if let Some(v) = element.value() {
+                // Convert &dyn Any to Box<dyn Any>
+                // This is a simplified approach - in real code would need proper handling
+                if let Some(s) = v.downcast_ref::<String>() {
+                    result.push(Box::new(s.clone()) as Box<dyn Any + Send + Sync>);
+                } else if let Some(n) = v.downcast_ref::<i64>() {
+                    result.push(Box::new(*n) as Box<dyn Any + Send + Sync>);
+                } else if let Some(n) = v.downcast_ref::<i32>() {
+                    result.push(Box::new(*n) as Box<dyn Any + Send + Sync>);
+                } else if let Some(b) = v.downcast_ref::<bool>() {
+                    result.push(Box::new(*b) as Box<dyn Any + Send + Sync>);
+                } else {
+                    result.push(Box::new(()) as Box<dyn Any + Send + Sync>);
+                }
+            } else {
+                result.push(Box::new(()) as Box<dyn Any + Send + Sync>);
+            }
+
+            let current_position = self.parser.mark();
+            if self.parser.can_consume("]") {
+                self.parser.rewind_to(current_position);
+            } else if !self.parser.can_consume(",") {
+                return Err(DataException::new(
+                    "Array elements missing ',' delimiter".to_string(),
+                ));
+            }
+        }
+
+        Err(DataException::new(
+            "Array is missing terminating ']'".to_string(),
+        ))
+    }
+
+    fn parse_map(&mut self) -> Result<SchemaAndValue, DataException> {
+        let mut result: HashMap<String, Box<dyn Any + Send + Sync>> = HashMap::new();
+        let mut key_schema = SchemaMerger::new();
+        let mut value_schema = SchemaMerger::new();
+
+        while self.parser.has_next() {
+            if self.parser.can_consume("}") {
+                let map_schema =
+                    if key_schema.has_common_schema() && value_schema.has_common_schema() {
+                        let ks = key_schema
+                            .schema()
+                            .ok_or_else(|| DataException::new("No key schema".to_string()))?;
+                        let vs = value_schema
+                            .schema()
+                            .ok_or_else(|| DataException::new("No value schema".to_string()))?;
+                        ConnectSchema::map(ks, vs)
+                    } else if key_schema.has_common_schema() {
+                        let ks = key_schema
+                            .schema()
+                            .ok_or_else(|| DataException::new("No key schema".to_string()))?;
+                        ConnectSchema::map(ks, Arc::new(STRING_SCHEMA))
+                    } else {
+                        ConnectSchema::map(Arc::new(STRING_SCHEMA), Arc::new(STRING_SCHEMA))
+                    };
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(map_schema)),
+                    Some(Box::new(result) as Box<dyn Any + Send + Sync>),
+                ));
+            }
+
+            if self.parser.can_consume(",") {
+                return Err(DataException::new(
+                    "Unable to parse a map entry with no key or value".to_string(),
+                ));
+            }
+
+            let key = self.parse(true)?;
+            let key_value = key
+                .value()
+                .ok_or_else(|| DataException::new("Map key is null".to_string()))?;
+
+            if !self.parser.can_consume(":") {
+                return Err(DataException::new(
+                    "Map entry is missing ':' delimiter".to_string(),
+                ));
+            }
+
+            let value = self.parse(true)?;
+            let value_value = value.value();
+
+            if let Some(key_str) = key_value.downcast_ref::<String>() {
+                // Convert &dyn Any to Box<dyn Any>
+                let boxed_value = if let Some(v) = value_value {
+                    // This is simplified - in real code would need proper deep cloning
+                    if let Some(s) = v.downcast_ref::<String>() {
+                        Box::new(s.clone()) as Box<dyn Any + Send + Sync>
+                    } else if let Some(n) = v.downcast_ref::<i64>() {
+                        Box::new(*n) as Box<dyn Any + Send + Sync>
+                    } else if let Some(n) = v.downcast_ref::<i32>() {
+                        Box::new(*n) as Box<dyn Any + Send + Sync>
+                    } else if let Some(b) = v.downcast_ref::<bool>() {
+                        Box::new(*b) as Box<dyn Any + Send + Sync>
+                    } else {
+                        Box::new(()) as Box<dyn Any + Send + Sync>
+                    }
+                } else {
+                    Box::new(()) as Box<dyn Any + Send + Sync>
+                };
+
+                result.insert(key_str.clone(), boxed_value);
+                key_schema.merge(&key);
+                value_schema.merge(&value);
+            } else {
+                return Err(DataException::new("Map key must be a string".to_string()));
+            }
+
+            self.parser.can_consume(",");
+        }
+
+        Err(DataException::new(
+            "Map is missing terminating '}'".to_string(),
+        ))
+    }
+
+    fn parse_as_number(&self, token: &str) -> Result<SchemaAndValue, DataException> {
+        // Try to parse as i64 first
+        if let Ok(n) = token.parse::<i64>() {
+            // Check if it fits in smaller types
+            if n >= i8::MIN as i64 && n <= i8::MAX as i64 {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(INT8_SCHEMA)),
+                    Some(Box::new(n as i8) as Box<dyn Any + Send + Sync>),
+                ));
+            } else if n >= i16::MIN as i64 && n <= i16::MAX as i64 {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(INT16_SCHEMA)),
+                    Some(Box::new(n as i16) as Box<dyn Any + Send + Sync>),
+                ));
+            } else if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(INT32_SCHEMA)),
+                    Some(Box::new(n as i32) as Box<dyn Any + Send + Sync>),
+                ));
+            } else {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(INT64_SCHEMA)),
+                    Some(Box::new(n) as Box<dyn Any + Send + Sync>),
+                ));
+            }
+        }
+
+        // Try to parse as f64
+        if let Ok(n) = token.parse::<f64>() {
+            // Check if it fits in f32
+            if n >= f32::MIN as f64 && n <= f32::MAX as f64 {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(FLOAT32_SCHEMA)),
+                    Some(Box::new(n as f32) as Box<dyn Any + Send + Sync>),
+                ));
+            } else {
+                return Ok(SchemaAndValue::new(
+                    Some(Arc::new(FLOAT64_SCHEMA)),
+                    Some(Box::new(n) as Box<dyn Any + Send + Sync>),
+                ));
+            }
+        }
+
+        Err(DataException::new(format!(
+            "Failed to parse '{}' as number",
+            token
+        )))
     }
 }
 
@@ -1277,6 +2843,263 @@ impl Decimal {
         Ok(vec![])
     }
 }
+
+// ============================================================================================
+// Schema Constants - predefined schemas for primitive types
+// ============================================================================================
+
+/// Predefined schema constants for primitive types
+pub const INT8_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int8,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const INT16_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int16,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const INT32_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int32,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const INT64_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int64,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const FLOAT32_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Float32,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const FLOAT64_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Float64,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const BOOLEAN_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Boolean,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const STRING_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::String,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const BYTES_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Bytes,
+    optional: false,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_INT8_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int8,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_INT16_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int16,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_INT32_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int32,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_INT64_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Int64,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_FLOAT32_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Float32,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_FLOAT64_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Float64,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_BOOLEAN_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Boolean,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_STRING_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::String,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
+
+pub const OPTIONAL_BYTES_SCHEMA: ConnectSchema = ConnectSchema {
+    type_: Type::Bytes,
+    optional: true,
+    default_value: None,
+    fields: None,
+    fields_by_name: None,
+    key_schema: None,
+    value_schema: None,
+    name: None,
+    version: None,
+    doc: None,
+    parameters: None,
+};
 
 // ============================================================================================
 // Header and Headers - representing record headers in Kafka Connect

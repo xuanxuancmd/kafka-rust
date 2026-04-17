@@ -3,7 +3,7 @@
 //! 定义MirrorMaker2使用的数据模型
 
 use crate::protocol::{Field, FieldValue, ProtocolError, Schema, Struct, Type};
-use kafka_clients_trait::consumer::{OffsetAndMetadata, TopicPartition};
+use common_trait::consumer::{OffsetAndMetadata, TopicPartition};
 use std::collections::HashMap;
 
 /// Checkpoint - 检查点数据结构

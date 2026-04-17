@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 connect-api = { path = "../connect-api" }
-kafka-clients-trait = { path = "../kafka-clients-trait" }
+common-trait = { path = "../common-trait" }
 kafka-clients-mock = { path = "../kafka-clients-mock" }
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

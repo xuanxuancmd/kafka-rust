@@ -17,7 +17,7 @@
 
 use crate::errors::BadRequestException;
 use crate::runtime::rest::entities::{ConnectorOffset, ConnectorOffsets};
-use kafka_clients_trait::consumer::{OffsetAndMetadata, TopicPartition};
+use common_trait::consumer::{OffsetAndMetadata, TopicPartition};
 use std::collections::HashMap;
 
 /// Utility methods for sink connectors

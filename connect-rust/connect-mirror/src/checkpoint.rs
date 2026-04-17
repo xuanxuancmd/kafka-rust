@@ -3,7 +3,7 @@
 //! This module implements the Checkpoint structure and its serialization/deserialization methods,
 //! corresponding to Java's Checkpoint.java.
 
-use kafka_clients_trait::consumer::{OffsetAndMetadata, TopicPartition};
+use common_trait::consumer::{OffsetAndMetadata, TopicPartition};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 

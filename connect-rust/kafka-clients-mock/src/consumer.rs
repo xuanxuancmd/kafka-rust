@@ -2,7 +2,7 @@
 //!
 //! This module provides a mock implementation of KafkaConsumer for testing purposes.
 
-use kafka_clients_trait::consumer::{KafkaConsumer, ConsumerRecord, TopicPartition};
+use common_trait::consumer::{KafkaConsumer, ConsumerRecord, TopicPartition};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -217,7 +217,7 @@ impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
                                     key: record.key.clone(),
                                     value: record.value.clone(),
                                     timestamp: record.timestamp.unwrap_or(0),
-                                    timestamp_type: kafka_clients_trait::consumer::TimestampType::CreateTime,
+                                    timestamp_type: common_trait::consumer::TimestampType::CreateTime,
                                 });
                             }
                         }
@@ -258,7 +258,7 @@ impl KafkaConsumer<Vec<u8>, Vec<u8>> for MockConsumer {
 
     fn commit_sync_offsets(
         &self,
-        _offsets: HashMap<TopicPartition, kafka_clients_trait::consumer::OffsetAndMetadata>,
+        _offsets: HashMap<TopicPartition, common_trait::consumer::OffsetAndMetadata>,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send {
         let closed = self.closed.clone();
 

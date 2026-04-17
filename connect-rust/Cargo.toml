@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "kafka-clients-trait",
+    "common-trait",
     "kafka-clients-mock",
     "connect-api",
     "connect-transforms",

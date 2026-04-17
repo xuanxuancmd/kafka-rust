@@ -16,8 +16,8 @@
  */
 
 use crate::errors::{ConnectException, RetriableException};
-use kafka_clients_trait::errors::{RetriableException as KafkaRetriableException, WakeupException};
-use kafka_clients_trait::time::Time;
+use common_trait::errors::{RetriableException as KafkaRetriableException, WakeupException};
+use common_trait::time::Time;
 use std::time::Duration;
 use std::ops::Function;
 

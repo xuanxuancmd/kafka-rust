@@ -16,7 +16,7 @@
  */
 
 use crate::util::{Callback, Stage};
-use kafka_clients_trait::time::Time;
+use common_trait::time::Time;
 
 /// Temporary stage that automatically completes when dropped
 pub struct TemporaryStage {

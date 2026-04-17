@@ -22,8 +22,8 @@
 
 use crate::checkpoint::Checkpoint;
 use connect_runtime::util::{Callback, KafkaBasedLog, TopicAdmin};
-use kafka_clients_trait::consumer::{ConsumerRecord, OffsetAndMetadata, TopicPartition};
-use kafka_clients_trait::time::Time;
+use common_trait::consumer::{ConsumerRecord, OffsetAndMetadata, TopicPartition};
+use common_trait::time::Time;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -324,7 +324,7 @@ impl CheckpointStore {
             consumer_config,
             Arc::new(Mutex::new(None)), // topic admin supplier
             consumed_callback,
-            Arc::new(kafka_clients_trait::time::SystemTime {}),
+            Arc::new(common_trait::time::SystemTime {}),
         )));
 
         // Start and stop the backing store to read all records

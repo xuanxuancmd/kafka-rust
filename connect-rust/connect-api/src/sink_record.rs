@@ -126,3 +126,37 @@ impl ConnectRecord<SinkRecord> for SinkRecord {
         }
     }
 }
+
+use common_trait::util::completable_future::CompletableFuture;
+
+/// Component that a SinkTask can use to report problematic records (and their corresponding problems)
+/// as it writes them through SinkTask::put.
+///
+/// This trait provides an asynchronous way to report errors to the dead letter queue (DLQ).
+pub trait ErrantRecordReporter {
+    /// Report a problematic record and the corresponding error to be written to the sink
+    /// connector's dead letter queue (DLQ).
+    ///
+    /// This call is asynchronous and returns a CompletableFuture. Awaiting on this future
+    /// will block until the record has been written or return any error that occurred while
+    /// sending the record.
+    ///
+    /// Connect guarantees that sink records reported through this reporter will be written to
+    /// the error topic before the framework calls the pre-commit method and therefore before
+    /// committing the consumer offsets.
+    ///
+    /// # Arguments
+    /// * `record` - The problematic record; may not be null
+    /// * `error` - The error capturing the problem with the record; may not be null
+    ///
+    /// # Returns
+    /// A future that can be used to block until the record and error are reported to the DLQ
+    ///
+    /// # Errors
+    /// Returns a ConnectException if the error reporter and DLQ fails to write a reported record
+    fn report(
+        &self,
+        record: &SinkRecord,
+        error: Box<dyn std::error::Error + Send + Sync>,
+    ) -> CompletableFuture<(), Box<dyn std::error::Error + Send + Sync>>;
+}

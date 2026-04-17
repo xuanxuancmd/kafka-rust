@@ -4,8 +4,8 @@
 //! with buffering logic to limit the number of in-flight records.
 
 use anyhow::Result;
-use kafka_clients_trait::consumer::TopicPartition;
-use kafka_clients_trait::producer::{Callback, KafkaProducer, ProducerRecord, RecordMetadata};
+use common_trait::consumer::TopicPartition;
+use common_trait::producer::{Callback, KafkaProducer, ProducerRecord, RecordMetadata};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
