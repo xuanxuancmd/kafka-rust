@@ -1,0 +1,92 @@
+  {
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "oh-my-opencode"
+  ],
+  "provider": {
+    "myprovider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "volcengine",
+      "options": {
+        "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
+        "apiKey": "b221c7c5-c231-46ea-86c1-9aff0c25572e"
+      },
+      "models": {
+        "ep-20260212160614-phrrs": {
+          "name": "GLM-4-7-20260212160614-phrrs"
+        }
+      }
+    },
+    "ztt_provider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "volcengine",
+      "options": {
+        "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
+        "apiKey": "4be0a3e3-72b9-4d3f-ac69-92094eeee63f"
+      },
+      "models": {
+        "ep-20260213115446-fkl4f": {
+          "name": "ztt_glm4.7"
+        }
+      }
+    },
+    "bailian-coding-provider": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Bailian Coding provider",
+            "options": {
+                "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "apiKey": "sk-a3d528ea1bdf47639b0974a4a46c5ff7"
+            },
+            "models": {
+                "qwen3.6-plus": {
+                    "name": "Qwen3.6 Plus",
+                    "modalities": {
+                        "input": ["text", "image"],
+                        "output": ["text"]
+                    },
+                    "options": {
+                        "thinking": {
+                            "type": "enabled",
+                            "budgetTokens": 8192
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 65536
+                    }
+                },
+                "glm-5": {
+                    "name": "GLM-5",
+                    "modalities": {
+                        "input": ["text"],
+                        "output": ["text"]
+                    },
+                    "options": {
+                        "thinking": {
+                            "type": "enabled",
+                            "budgetTokens": 8192
+                        }
+                    },
+                    "limit": {
+                        "context": 202752,
+                        "output": 16384
+                    }
+                }
+            }
+        }
+  },
+  "mcp": {
+    "context7": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ]
+    },
+    "deepwiki": {
+      "type": "remote",
+      "url": "https://mcp.deepwiki.com/mcp"
+    }
+  }
+}
