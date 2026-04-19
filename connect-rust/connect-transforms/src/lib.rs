@@ -1,24 +1,22 @@
-//! Kafka Connect Transforms
-//!
-//! This crate provides built-in data transformations for Kafka Connect.
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-pub mod complex;
-pub mod field;
-pub mod header_from;
-pub mod hoist_field;
-pub mod insert_field;
-pub mod predicate;
-pub mod regex_router;
-pub mod set_schema_metadata;
-pub mod simple;
+//! Connect transforms module for Kafka Connect.
+
 pub mod transformation;
-pub mod util;
+pub mod transforms;
 
-pub use predicate::Predicate;
-pub use transformation::Transformation;
-
-// Re-export util module types for convenience
-pub use util::{NonEmptyListValidator, RegexValidator, Requirements, SchemaUtil, SimpleConfig};
-
-// Re-export field module types for convenience
-pub use field::{FieldSyntaxVersion, SingleFieldPath};
+pub use transformation::*;
+pub use transforms::*;

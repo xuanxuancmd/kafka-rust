@@ -1,125 +1,259 @@
-//! Processing context module
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! ProcessingContext holds state about an operation being processed.
 //!
-//! Provides the ProcessingContext struct for metadata related to currently evaluating operations.
+//! This corresponds to `org.apache.kafka.connect.runtime.errors.ProcessingContext` in Java.
 
-use crate::errors::stage::Stage;
-use std::any::TypeId;
+use std::any::Any;
+use std::error::Error;
+use std::fmt;
+use std::time::Instant;
 
-/// Contains all the metadata related to the currently evaluating operation, and associated with a particular
-/// sink or source record from the consumer or task, respectively. This struct is not thread safe, and so once an
-/// instance is passed to a new thread, it should no longer be accessed by the previous thread.
-pub struct ProcessingContext<T> {
-    /// The original record before processing, as received from either Kafka or a Source Task
-    original: T,
+use super::Stage;
 
-    /// The stage in the connector pipeline which is currently executing
-    position: Option<Stage>,
-
-    /// The class which is going to execute the current operation
-    klass: Option<TypeId>,
-
-    /// The number of attempts made to execute the current operation
-    attempt: i32,
-
-    /// The error (if any) which was encountered while processing the current stage
-    error: Option<Box<dyn std::error::Error + Send + Sync>>,
+/// ProcessingContext holds state about an operation being processed.
+///
+/// It tracks the current Stage, the executing class, the number of attempts,
+/// and any error encountered. This context is mutated by RetryWithToleranceOperator
+/// to reflect the outcome of operations.
+pub struct ProcessingContext {
+    /// The current stage in the processing pipeline
+    stage: Option<Stage>,
+    /// The class that is executing the operation (used for error reporting)
+    executing_class: Option<String>,
+    /// The number of retry attempts made
+    attempts: u32,
+    /// Any error that occurred during processing
+    error: Option<Box<dyn Error + Send + Sync>>,
+    /// The timestamp when processing started
+    start_time: Instant,
+    /// Whether this context represents a failed operation
+    failed: bool,
 }
 
-impl<T> ProcessingContext<T> {
-    /// Construct a context associated with the processing of a particular record
-    ///
-    /// # Arguments
-    ///
-    /// * `original` - The original record before processing, as received from either Kafka or a Source Task
-    pub fn new(original: T) -> Self {
-        Self {
-            original,
-            position: None,
-            klass: None,
-            attempt: 0,
+impl ProcessingContext {
+    /// Creates a new ProcessingContext with default values.
+    pub fn new() -> Self {
+        ProcessingContext {
+            stage: None,
+            executing_class: None,
+            attempts: 0,
             error: None,
+            start_time: Instant::now(),
+            failed: false,
         }
     }
 
-    /// Get the original record before processing, as received from either Kafka or a Source Task
-    pub fn original(&self) -> &T {
-        &self.original
+    /// Sets the current stage for this context.
+    pub fn set_stage(&mut self, stage: Stage) {
+        self.stage = Some(stage);
     }
 
-    /// Get the original record as mutable
-    pub fn original_mut(&mut self) -> &mut T {
-        &mut self.original
-    }
-
-    /// Set the stage in the connector pipeline which is currently executing
-    ///
-    /// # Arguments
-    ///
-    /// * `position` - the stage
-    pub fn position(&mut self, position: Stage) {
-        self.position = Some(position);
-    }
-
-    /// Get the stage in the connector pipeline which is currently executing
+    /// Returns the current stage, if set.
     pub fn stage(&self) -> Option<Stage> {
-        self.position
+        self.stage
     }
 
-    /// Get the class which is going to execute the current operation
-    pub fn executing_class(&self) -> Option<TypeId> {
-        self.klass
+    /// Sets the executing class name for this context.
+    pub fn set_executing_class(&mut self, class_name: String) {
+        self.executing_class = Some(class_name);
     }
 
-    /// Set the class which is currently executing
-    ///
-    /// # Arguments
-    ///
-    /// * `klass` - set the class which is currently executing
-    pub fn executing_class(&mut self, klass: TypeId) {
-        self.klass = Some(klass);
+    /// Returns the executing class name, if set.
+    pub fn executing_class(&self) -> Option<&str> {
+        self.executing_class.as_deref()
     }
 
-    /// A helper method to set both the stage and the class
-    ///
-    /// # Arguments
-    ///
-    /// * `stage` - the stage
-    /// * `klass` - the class which will execute the operation in this stage
-    pub fn current_context(&mut self, stage: Stage, klass: TypeId) {
-        self.position(stage);
-        self.executing_class(klass);
+    /// Increments the attempt counter.
+    pub fn increment_attempts(&mut self) {
+        self.attempts += 1;
     }
 
-    /// Set the number of attempts made to execute the current operation
-    ///
-    /// # Arguments
-    ///
-    /// * `attempt` - the number of attempts made to execute the current operation
-    pub fn attempt(&mut self, attempt: i32) {
-        self.attempt = attempt;
+    /// Returns the number of attempts made.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
     }
 
-    /// Get the number of attempts made to execute the current operation
-    pub fn get_attempt(&self) -> i32 {
-        self.attempt
-    }
-
-    /// Get the error (if any) which was encountered while processing the current stage
-    pub fn error(&self) -> Option<&(dyn std::error::Error + Send + Sync)> {
-        self.error.as_ref().map(|e| e.as_ref())
-    }
-
-    /// Set the error (if any) which was encountered while processing the current stage
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - the error
-    pub fn set_error(&mut self, error: Box<dyn std::error::Error + Send + Sync>) {
+    /// Sets the error for this context.
+    pub fn set_error(&mut self, error: Box<dyn Error + Send + Sync>) {
         self.error = Some(error);
+        self.failed = true;
     }
 
-    /// Return true if the last operation encountered an error; false otherwise
-    pub fn failed(&self) -> bool {
-        self.error.is_some()
+    /// Returns the error, if any.
+    pub fn error(&self) -> Option<&(dyn Error + Send + Sync)> {
+        self.error.as_deref()
+    }
+
+    /// Returns true if this context represents a failed operation.
+    pub fn is_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Marks this context as failed.
+    pub fn mark_failed(&mut self) {
+        self.failed = true;
+    }
+
+    /// Returns the elapsed time since processing started.
+    pub fn elapsed_millis(&self) -> u64 {
+        self.start_time.elapsed().as_millis() as u64
+    }
+
+    /// Resets this context for a new operation.
+    pub fn reset(&mut self) {
+        self.stage = None;
+        self.executing_class = None;
+        self.attempts = 0;
+        self.error = None;
+        self.start_time = Instant::now();
+        self.failed = false;
+    }
+
+    /// Returns a summary string for logging purposes.
+    pub fn summary(&self) -> String {
+        format!(
+            "ProcessingContext: stage={}, class={}, attempts={}, failed={}, error={}",
+            self.stage
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.executing_class.as_deref().unwrap_or("none"),
+            self.attempts,
+            self.failed,
+            self.error
+                .as_ref()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        )
+    }
+}
+
+impl Default for ProcessingContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for ProcessingContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProcessingContext")
+            .field("stage", &self.stage)
+            .field("executing_class", &self.executing_class)
+            .field("attempts", &self.attempts)
+            .field("failed", &self.failed)
+            .field("elapsed_millis", &self.elapsed_millis())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn test_processing_context_new() {
+        let ctx = ProcessingContext::new();
+        assert!(ctx.stage().is_none());
+        assert!(ctx.executing_class().is_none());
+        assert_eq!(ctx.attempts(), 0);
+        assert!(ctx.error().is_none());
+        assert!(!ctx.is_failed());
+    }
+
+    #[test]
+    fn test_processing_context_set_stage() {
+        let mut ctx = ProcessingContext::new();
+        ctx.set_stage(Stage::KEY_CONVERTER);
+        assert_eq!(ctx.stage(), Some(Stage::KEY_CONVERTER));
+    }
+
+    #[test]
+    fn test_processing_context_set_executing_class() {
+        let mut ctx = ProcessingContext::new();
+        ctx.set_executing_class("MyConnector".to_string());
+        assert_eq!(ctx.executing_class(), Some("MyConnector"));
+    }
+
+    #[test]
+    fn test_processing_context_attempts() {
+        let mut ctx = ProcessingContext::new();
+        assert_eq!(ctx.attempts(), 0);
+        ctx.increment_attempts();
+        assert_eq!(ctx.attempts(), 1);
+        ctx.increment_attempts();
+        assert_eq!(ctx.attempts(), 2);
+    }
+
+    #[test]
+    fn test_processing_context_error() {
+        let mut ctx = ProcessingContext::new();
+        let error = io::Error::new(io::ErrorKind::Other, "test error");
+        ctx.set_error(Box::new(error));
+        assert!(ctx.error().is_some());
+        assert!(ctx.is_failed());
+    }
+
+    #[test]
+    fn test_processing_context_mark_failed() {
+        let mut ctx = ProcessingContext::new();
+        assert!(!ctx.is_failed());
+        ctx.mark_failed();
+        assert!(ctx.is_failed());
+    }
+
+    #[test]
+    fn test_processing_context_reset() {
+        let mut ctx = ProcessingContext::new();
+        ctx.set_stage(Stage::TRANSFORMATION);
+        ctx.set_executing_class("Test".to_string());
+        ctx.increment_attempts();
+        ctx.mark_failed();
+
+        ctx.reset();
+        assert!(ctx.stage().is_none());
+        assert!(ctx.executing_class().is_none());
+        assert_eq!(ctx.attempts(), 0);
+        assert!(!ctx.is_failed());
+    }
+
+    #[test]
+    fn test_processing_context_elapsed_millis() {
+        let ctx = ProcessingContext::new();
+        // Should be very small immediately after creation
+        assert!(ctx.elapsed_millis() < 100);
+    }
+
+    #[test]
+    fn test_processing_context_summary() {
+        let mut ctx = ProcessingContext::new();
+        ctx.set_stage(Stage::VALUE_CONVERTER);
+        ctx.set_executing_class("MyClass".to_string());
+        ctx.increment_attempts();
+
+        let summary = ctx.summary();
+        assert!(summary.contains("VALUE_CONVERTER"));
+        assert!(summary.contains("MyClass"));
+        assert!(summary.contains("attempts=1"));
+    }
+
+    #[test]
+    fn test_processing_context_default() {
+        let ctx = ProcessingContext::default();
+        assert!(ctx.stage().is_none());
+        assert_eq!(ctx.attempts(), 0);
     }
 }

@@ -82,7 +82,6 @@ impl<T, E> fmt::Debug for CompletableFuture<T, E> {
     }
 }
 
-
 impl<T, E> Future for CompletableFuture<T, E> {
     type Output = Result<T, FutureError<E>>;
 

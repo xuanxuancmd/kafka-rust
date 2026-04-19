@@ -1,46 +1,101 @@
-//! TopicPartition - 主题和分区
-//!
-//! 用于表示 Kafka 中的主题和分区
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+use std::fmt;
+use std::hash::{Hash, Hasher};
+
+/// TopicPartition represents a topic and partition pair.
+///
+/// This corresponds to `org.apache.kafka.common.TopicPartition` in Java.
+#[derive(Debug, Clone, Eq)]
 pub struct TopicPartition {
-    pub topic: String,
-    pub partition: i32,
+    topic: String,
+    partition: i32,
 }
 
 impl TopicPartition {
-    /// 创建新的 TopicPartition
-    pub fn new(topic: String, partition: i32) -> Self {
-        TopicPartition { topic, partition }
-    }
-}
-
-/// OffsetAndMetadata - 偏移量和元数据
-///
-/// 用于表示 Kafka 中的偏移量和元数据
-#[derive(Debug, Clone)]
-pub struct OffsetAndMetadata {
-    pub offset: i64,
-    pub metadata: String,
-    pub leader_epoch: Option<i32>,
-}
-
-impl OffsetAndMetadata {
-    /// 创建新的 OffsetAndMetadata
-    pub fn new(offset: i64, metadata: String) -> Self {
-        OffsetAndMetadata {
-            offset,
-            metadata,
-            leader_epoch: None,
+    /// Creates a new TopicPartition with the given topic and partition.
+    pub fn new(topic: impl Into<String>, partition: i32) -> Self {
+        TopicPartition {
+            topic: topic.into(),
+            partition,
         }
     }
 
-    /// 创建带有 leader_epoch 的 OffsetAndMetadata
-    pub fn with_leader_epoch(offset: i64, metadata: String, leader_epoch: i32) -> Self {
-        OffsetAndMetadata {
-            offset,
-            metadata,
-            leader_epoch: Some(leader_epoch),
-        }
+    /// Returns the topic name.
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    /// Returns the partition number.
+    pub fn partition(&self) -> i32 {
+        self.partition
+    }
+}
+
+impl fmt::Display for TopicPartition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.topic, self.partition)
+    }
+}
+
+impl PartialEq for TopicPartition {
+    fn eq(&self, other: &Self) -> bool {
+        self.topic == other.topic && self.partition == other.partition
+    }
+}
+
+impl Hash for TopicPartition {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.topic.hash(state);
+        self.partition.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new() {
+        let tp = TopicPartition::new("test-topic", 0);
+        assert_eq!(tp.topic(), "test-topic");
+        assert_eq!(tp.partition(), 0);
+    }
+
+    #[test]
+    fn test_display() {
+        let tp = TopicPartition::new("test-topic", 5);
+        assert_eq!(format!("{}", tp), "test-topic:5");
+    }
+
+    #[test]
+    fn test_eq() {
+        let tp1 = TopicPartition::new("test-topic", 0);
+        let tp2 = TopicPartition::new("test-topic", 0);
+        let tp3 = TopicPartition::new("test-topic", 1);
+        assert_eq!(tp1, tp2);
+        assert_ne!(tp1, tp3);
+    }
+
+    #[test]
+    fn test_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        let tp = TopicPartition::new("test-topic", 0);
+        set.insert(tp.clone());
+        assert!(set.contains(&tp));
     }
 }

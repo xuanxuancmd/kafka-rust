@@ -5,9 +5,15 @@ edition = "2021"
 
 [dependencies]
 common-trait = { path = "../common-trait" }
+kafka-clients-mock = { path = "../kafka-clients-mock" }
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 async-trait = "0.1"
 futures = "0.3"
+bigdecimal = "0.4"
+num-bigint = "0.4"
+chrono = "0.4"
+base64 = "0.21"
+regex = "1.10"
