@@ -114,6 +114,26 @@ pub const ERRORS_LOG_INCLUDE_MESSAGES_CONFIG: &str = "errors.log.include.message
 /// Corresponds to Java: ConnectorConfig.ERRORS_LOG_INCLUDE_MESSAGES_DEFAULT
 pub const ERRORS_LOG_INCLUDE_MESSAGES_DEFAULT: bool = false;
 
+/// Configuration key for tasks max enforcement.
+/// Corresponds to Java: ConnectorConfig.TASKS_MAX_ENFORCE_CONFIG
+pub const TASKS_MAX_ENFORCE_CONFIG: &str = "tasks.max.enforce";
+
+/// Default value for tasks max enforcement.
+/// Corresponds to Java: ConnectorConfig.TASKS_MAX_ENFORCE_DEFAULT
+pub const TASKS_MAX_ENFORCE_DEFAULT: bool = true;
+
+/// Configuration key for config reload action.
+/// Corresponds to Java: ConnectorConfig.CONFIG_RELOAD_ACTION_CONFIG
+pub const CONFIG_RELOAD_ACTION_CONFIG: &str = "config.action.reload";
+
+/// Default value for config reload action - restart.
+/// Corresponds to Java: ConnectorConfig.CONFIG_RELOAD_ACTION_RESTART
+pub const CONFIG_RELOAD_ACTION_RESTART: &str = "restart";
+
+/// Config reload action value - none (no action).
+/// Corresponds to Java: ConnectorConfig.CONFIG_RELOAD_ACTION_NONE
+pub const CONFIG_RELOAD_ACTION_NONE: &str = "none";
+
 // ============================================================================
 // ConnectorConfig
 // ============================================================================

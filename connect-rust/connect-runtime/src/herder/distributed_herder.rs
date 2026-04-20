@@ -173,6 +173,54 @@ impl CallbackWithResult for SimpleCallbackResult {
     }
 }
 
+/// SimpleCallback - A callback implementation that captures the result.
+/// Uses Arc internally so Clone shares storage.
+pub struct SimpleCallback<T: Clone> {
+    state: Arc<SharedCallbackState<T>>,
+}
+
+struct SharedCallbackState<T: Clone> {
+    result: RwLock<Option<T>>,
+    error: RwLock<Option<String>>,
+}
+
+impl<T: Clone> Clone for SimpleCallback<T> {
+    fn clone(&self) -> Self {
+        SimpleCallback {
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<T: Clone> SimpleCallback<T> {
+    pub fn new() -> Self {
+        SimpleCallback {
+            state: Arc::new(SharedCallbackState {
+                result: RwLock::new(None),
+                error: RwLock::new(None),
+            }),
+        }
+    }
+
+    pub fn result(&self) -> Option<T> {
+        self.state.result.read().unwrap().clone()
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.state.error.read().unwrap().clone()
+    }
+}
+
+impl<T: Clone> Callback<T> for SimpleCallback<T> {
+    fn on_completion(&self, result: T) {
+        *self.state.result.write().unwrap() = Some(result);
+    }
+
+    fn on_error(&self, error: String) {
+        *self.state.error.write().unwrap() = Some(error);
+    }
+}
+
 // ===== ExtendedAssignment - Assignment data structure =====
 
 /// ExtendedAssignment - Connector/task assignment data structure.
@@ -2177,6 +2225,173 @@ impl Herder for DistributedHerder {
 
     fn set_worker_logger_level(&self, _namespace: &str, _level: &str) -> Vec<String> {
         vec![]
+    }
+
+    // === New Herder trait methods ===
+
+    fn stop_connector_async(&self, connector: &str, callback: Box<dyn Callback<()>>) {
+        let exists = {
+            let connector_configs = self.connector_configs.read().unwrap();
+            connector_configs.contains_key(connector)
+        };
+
+        if !exists {
+            callback.on_error(format!("Connector '{}' does not exist", connector));
+            self.metrics.increment_error_count();
+            return;
+        }
+
+        // Update target state to stopped
+        {
+            let mut states = self.target_states.write().unwrap();
+            states.insert(connector.to_string(), TargetState::Stopped);
+        }
+
+        self.update_config_state_snapshot();
+
+        // In distributed mode, stopping a connector requires leader coordination
+        if !self.is_leader() {
+            callback.on_error(format!(
+                "NotLeader: only leader can stop connector '{}'. Current leader: '{}'",
+                connector,
+                self.leader_id()
+            ));
+            self.metrics.increment_error_count();
+            return;
+        }
+
+        callback.on_completion(());
+    }
+
+    fn restart_connector_and_tasks(
+        &self,
+        request: &common_trait::herder::RestartRequest,
+        callback: Box<dyn Callback<ConnectorStateInfo>>,
+    ) {
+        let conn_name = request.connector();
+
+        let exists = {
+            let connector_configs = self.connector_configs.read().unwrap();
+            connector_configs.contains_key(conn_name)
+        };
+
+        if !exists {
+            callback.on_error(format!("Connector '{}' does not exist", conn_name));
+            self.metrics.increment_error_count();
+            return;
+        }
+
+        // Get current connector status
+        let connector_state_info = self.connector_status(conn_name);
+
+        // If only_failed is true, check if connector is actually failed
+        if request.only_failed() && connector_state_info.connector != ConnectorState::Failed {
+            // Connector is not failed, no restart needed
+            callback.on_completion(connector_state_info);
+            return;
+        }
+
+        // Restart connector
+        let restart_callback = SimpleCallback::<()>::new();
+        self.restart_connector_async(conn_name, Box::new(restart_callback.clone()));
+
+        match restart_callback.result() {
+            Some(_) => callback.on_completion(self.connector_status(conn_name)),
+            None => callback.on_error("Failed to restart connector".to_string()),
+        }
+    }
+
+    fn reset_connector_offsets(&self, conn_name: &str, callback: Box<dyn Callback<Message>>) {
+        let exists = {
+            let connector_configs = self.connector_configs.read().unwrap();
+            connector_configs.contains_key(conn_name)
+        };
+
+        if !exists {
+            callback.on_error(format!("Connector '{}' does not exist", conn_name));
+            self.metrics.increment_error_count();
+            return;
+        }
+
+        // Clear all offsets for this connector
+        {
+            let mut stored_offsets = self.connector_offsets.write().unwrap();
+            stored_offsets.remove(conn_name);
+        }
+
+        callback.on_completion(Message {
+            code: 0,
+            message: format!("Offsets reset successfully for connector '{}'", conn_name),
+        });
+    }
+
+    fn all_logger_levels(&self) -> HashMap<String, LoggerLevel> {
+        // Return empty map since we don't track loggers in distributed mode's in-memory state
+        // Real implementation would query LogContext.getLoggers()
+        HashMap::new()
+    }
+
+    fn set_cluster_logger_level(&self, _namespace: &str, _level: &str) {
+        // In distributed mode, this should write to the config topic
+        // Simplified implementation - no actual cluster-wide logging support
+    }
+
+    fn connect_metrics(&self) -> Box<dyn common_trait::herder::ConnectMetrics> {
+        // Return a reference to the worker's metrics
+        Box::new(DistributedConnectMetrics::new(
+            self.worker.config().worker_id().to_string(),
+        ))
+    }
+}
+
+// ===== DistributedConnectMetrics implementation =====
+
+/// ConnectMetrics implementation for DistributedHerder.
+struct DistributedConnectMetrics {
+    worker_id: String,
+}
+
+impl DistributedConnectMetrics {
+    fn new(worker_id: String) -> Self {
+        DistributedConnectMetrics { worker_id }
+    }
+}
+
+impl common_trait::herder::ConnectMetrics for DistributedConnectMetrics {
+    fn registry(&self) -> &dyn common_trait::herder::MetricsRegistry {
+        // Note: We use a static registry since trait objects need stable memory location
+        // The actual worker_group_name is stored in self, not in the static registry
+        static REGISTRY: DistributedMetricsRegistry = DistributedMetricsRegistry::new_static();
+        &REGISTRY
+    }
+
+    fn stop(&self) {
+        // No actual metrics to stop in simplified implementation
+    }
+}
+
+/// MetricsRegistry implementation for DistributedHerder.
+struct DistributedMetricsRegistry {
+    worker_id: String,
+}
+
+impl DistributedMetricsRegistry {
+    fn new(worker_id: String) -> Self {
+        DistributedMetricsRegistry { worker_id }
+    }
+
+    const fn new_static() -> Self {
+        DistributedMetricsRegistry {
+            worker_id: String::new(),
+        }
+    }
+}
+
+impl common_trait::herder::MetricsRegistry for DistributedMetricsRegistry {
+    fn worker_group_name(&self) -> &str {
+        // For static registry, return empty string as it's only used for trait object stability
+        // The actual worker_id is tracked through DistributedConnectMetrics
+        &self.worker_id
     }
 }
 

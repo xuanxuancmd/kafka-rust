@@ -1795,6 +1795,157 @@ impl Herder for StandaloneHerder {
         // Return affected loggers (in standalone mode, only the single namespace)
         vec![namespace.to_string()]
     }
+
+    // === New Herder trait methods ===
+
+    fn stop_connector_async(&self, connector: &str, callback: Box<dyn Callback<()>>) {
+        if !self.config_backing_store.contains(connector) {
+            callback.on_error(format!("Connector {} not found", connector));
+            return;
+        }
+
+        // Update target state to stopped
+        self.config_backing_store
+            .put_target_state(connector, TargetState::Stopped);
+
+        // Stop tasks
+        self.remove_connector_tasks(connector);
+
+        // Stop connector
+        self.worker.stop_and_await_connector(connector);
+
+        // Update status
+        self.status_backing_store
+            .put_connector_state(connector, ConnectorState::Unassigned);
+
+        callback.on_completion(());
+    }
+
+    fn restart_connector_and_tasks(
+        &self,
+        request: &common_trait::herder::RestartRequest,
+        callback: Box<dyn Callback<ConnectorStateInfo>>,
+    ) {
+        let conn_name = request.connector();
+
+        if !self.config_backing_store.contains(conn_name) {
+            callback.on_error(format!("Connector {} not found", conn_name));
+            return;
+        }
+
+        // Get current connector status
+        let connector_state_info = self.connector_status(conn_name);
+
+        // If only_failed is true, check if connector is actually failed
+        if request.only_failed() && connector_state_info.connector != ConnectorState::Failed {
+            // Connector is not failed, no restart needed
+            callback.on_completion(connector_state_info);
+            return;
+        }
+
+        // Restart connector
+        let restart_callback = SimpleCallback::<()>::new();
+        self.restart_connector_async(conn_name, Box::new(restart_callback.clone()));
+
+        match restart_callback.result() {
+            Some(_) => callback.on_completion(self.connector_status(conn_name)),
+            None => callback.on_error("Failed to restart connector".to_string()),
+        }
+    }
+
+    fn reset_connector_offsets(&self, conn_name: &str, callback: Box<dyn Callback<Message>>) {
+        if !self.config_backing_store.contains(conn_name) {
+            callback.on_error(format!("Connector {} not found", conn_name));
+            return;
+        }
+
+        // Clear all offsets for this connector
+        self.connector_offsets.write().unwrap().remove(conn_name);
+
+        callback.on_completion(Message {
+            code: 0,
+            message: format!("Offsets reset for connector {}", conn_name),
+        });
+    }
+
+    fn all_logger_levels(&self) -> HashMap<String, LoggerLevel> {
+        let levels = self.logger_levels.read().unwrap();
+        levels
+            .iter()
+            .map(|(name, level)| {
+                (
+                    name.clone(),
+                    LoggerLevel {
+                        logger: name.clone(),
+                        level: level.clone(),
+                        effective_level: level.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn set_cluster_logger_level(&self, namespace: &str, level: &str) {
+        // In standalone mode, cluster logger level is same as worker logger level
+        self.logger_levels
+            .write()
+            .unwrap()
+            .insert(namespace.to_string(), level.to_string());
+    }
+
+    fn connect_metrics(&self) -> Box<dyn common_trait::herder::ConnectMetrics> {
+        // Return standalone metrics wrapper
+        Box::new(StandaloneConnectMetrics::new(
+            self.worker.config().worker_id().to_string(),
+        ))
+    }
+}
+
+// ===== StandaloneConnectMetrics implementation =====
+
+/// ConnectMetrics implementation for StandaloneHerder.
+struct StandaloneConnectMetrics {
+    worker_id: String,
+}
+
+impl StandaloneConnectMetrics {
+    fn new(worker_id: String) -> Self {
+        StandaloneConnectMetrics { worker_id }
+    }
+}
+
+impl common_trait::herder::ConnectMetrics for StandaloneConnectMetrics {
+    fn registry(&self) -> &dyn common_trait::herder::MetricsRegistry {
+        static REGISTRY: StandaloneMetricsRegistry = StandaloneMetricsRegistry::new_static();
+        &REGISTRY
+    }
+
+    fn stop(&self) {
+        // No actual metrics to stop
+    }
+}
+
+/// MetricsRegistry implementation for StandaloneHerder.
+struct StandaloneMetricsRegistry {
+    worker_id: String,
+}
+
+impl StandaloneMetricsRegistry {
+    fn new(worker_id: String) -> Self {
+        StandaloneMetricsRegistry { worker_id }
+    }
+
+    const fn new_static() -> Self {
+        StandaloneMetricsRegistry {
+            worker_id: String::new(),
+        }
+    }
+}
+
+impl common_trait::herder::MetricsRegistry for StandaloneMetricsRegistry {
+    fn worker_group_name(&self) -> &str {
+        &self.worker_id
+    }
 }
 
 // ===== Tests =====

@@ -15,18 +15,36 @@
 
 //! Connect runtime module for Kafka Connect.
 
+pub mod cli;
 pub mod config;
+pub mod connector;
+pub mod converters;
+pub mod distributed;
 pub mod errors;
+pub mod health;
 pub mod herder;
+pub mod isolation;
 pub mod rest;
+pub mod runtime;
 pub mod storage;
 pub mod task;
+pub mod tools;
+pub mod util;
 pub mod worker;
 
+pub use cli::*;
 pub use config::*;
+pub use connector::*;
+pub use converters::*;
+pub use distributed::*;
 pub use errors::*;
+pub use health::*;
 pub use herder::*;
+pub use isolation::*;
 pub use rest::*;
+pub use runtime::*;
 pub use storage::*;
 pub use task::*;
+pub use tools::*;
+pub use util::*;
 pub use worker::*;

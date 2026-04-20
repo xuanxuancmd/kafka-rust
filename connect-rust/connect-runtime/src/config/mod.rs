@@ -23,12 +23,12 @@
 //!
 //! Corresponds to Java package: org.apache.kafka.connect.runtime
 
-mod connector_config;
-mod distributed_config;
-mod sink_connector_config;
-mod source_connector_config;
-mod standalone_config;
-mod worker_config;
+pub mod connector_config;
+pub mod distributed_config;
+pub mod sink_connector_config;
+pub mod source_connector_config;
+pub mod standalone_config;
+pub mod worker_config;
 
 pub use connector_config::*;
 pub use distributed_config::*;

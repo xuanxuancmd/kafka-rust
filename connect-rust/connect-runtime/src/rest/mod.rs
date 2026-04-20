@@ -25,10 +25,14 @@
 //! Corresponds to `org.apache.kafka.connect.runtime.rest` in Java.
 
 mod entities;
+pub mod errors;
 mod rest_client;
 mod rest_server;
 pub mod resources;
+pub mod util;
 
 pub use entities::*;
+pub use errors::*;
 pub use rest_client::*;
 pub use rest_server::*;
+pub use util::*;
