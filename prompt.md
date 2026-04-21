@@ -1,7 +1,22 @@
 sk-a3d528ea1bdf47639b0974a4a46c5ff7
 
 
+https://codex.ysaikeji.cn/console/personal?tab=points
 
+"openai": {
+      "name": "OpenAI",
+      "options": {
+        "baseURL": "https://codex.ysaikeji.cn/v1",
+        "apiKey": "sk-UW4NW6lcUihEyvbwSSsB68tpAdfyl2hs21erGHRyk20XZwc4",
+        "reasoningEffort": "medium",
+        "reasoningSummary": "auto",
+        "textVerbosity": "medium",
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "store": false
+      }
+    }
 
 ```
 我计划用rust语言重写kafka connect目录到connect-rust目录下（含测试），当前需要分析connect/runtime核心模块，完成1:1代码翻译方案，保证迁移代码的一致性、完整性、正确性，所有内容均需要提交我审阅再继续。约束：
@@ -29,12 +44,12 @@ sk-a3d528ea1bdf47639b0974a4a46c5ff7
 ```
 
 ```
-我当前正在kafka的connect/transforms目录下代码到connect/connect-transforms的代码的rust翻译过程，请检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确。比如完整性可展示kafka connect/transforms中Java代码类个数、代码量，以及connect-rust/connect-transforms的struct\trait的个数、代码量，展示迁移的完整性。比如正确性，可展示kafka原模块的@Test用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译结果和ut运行结果。同时请告诉我，
+我当前正在kafka的connect/runtime目录下代码到connect/connect-runtime的代码的rust翻译过程，上一轮的plan是connect-runtime-supplemental-migration，但是仍有遗漏（该模块代码量大）。因此，请阅读该plan理解需求，然后检查该plan是否已经完成，同时检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，对于完整性不足或功能问题输出详细补齐计划。比如完整性可展示kafka connect/runtime中Java代码类个数、代码行数，以及connect-rust/connect-runtime的struct\trait的个数、代码行数，展示迁移的完整性。比如正确性，可展示kafka原模块的@Test用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译结果和ut运行结果。
 ```
 
-当前已完成kafka的connect/api目录下代码到connect/connect-api的代码的rust翻译过程，但需要检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，请检查不满足条件的点，若简单请直接修改，如果差异较大应该先制定plan再实施。额外要求：
+当前已完成kafka的connect/runtime目录下代码到connect/connect-runtime的代码的rust翻译过程，但需要检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，请检查不满足条件的点，若简单请直接修改，如果差异较大应该先制定plan再实施。额外要求：
 1.connect-rust内rust代码的测试代码在tests目录下，不要和源码放在一起。
-2.完整性指：kafka connect/api中Java代码类个数、代码量，以及connect-rust/connect-api的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏。
+2.完整性指：kafka connect/runtime中Java代码类个数、代码量，以及connect-rust/connect-runtime的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏。
 3.正确性指：kafka原模块的\@Test用例数量和迁移后的rust代码测试用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译和ut运行成功的结果
 4.分析维度要细致，最终展示结果也要细致，包含源码目录、类的一致性比对，函数、代码量的完整新比对，以及测试用例数量、编译运行结果的比对，缺一不可。
 
@@ -43,7 +58,7 @@ sk-a3d528ea1bdf47639b0974a4a46c5ff7
 1. 迁移过程要严格保证目录、类名、函数名和kafka保持一致，对于目录需保证除去项目父路径org\apache\kafka\connect外所有子路径均严格一致，代码需要1:1代码翻译；
 2. 原connect/runtime模块仅源码java代码就有4万以上，属于大型项目，你需要精确设计确保迁移不遗漏。
 3. 优先分析connect/runtime中涉及的Java到rust的语言翻译难点，含对三方的依赖，分析结果提交我审阅。允许使用系统库、tokio*、serde*、futures*、async-trait、anyhow、base64、regex、one_cel、chrono，其他新增外部依赖库一并提交我审阅。
-比如：1）遇到java的CompletableFuture应该使用common-trait/util/completable_future.rs；
+   比如：1）遇到java的CompletableFuture应该使用common-trait/util/completable_future.rs；
      2）涉及Java的继承体系，对于子类集中于同一目录且分类清晰，通过enum方式实现；否则继承应通过trait实现。
      3）反射、SPI等扩展机制，允许提供编译期宏实现编译时扩展机制即可。
      4）日志打印临时用原始的println方式即可。 
