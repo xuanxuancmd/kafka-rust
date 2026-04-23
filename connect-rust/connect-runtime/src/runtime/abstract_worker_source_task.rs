@@ -663,7 +663,7 @@ pub struct AbstractWorkerSourceTask {
     /// Records to send (pending from poll).
     to_send: Mutex<Option<Vec<SourceRecord>>>,
     /// Plugin metrics.
-    plugin_metrics: Option<Arc<dyn PluginMetrics>>,
+    plugin_metrics: Option<Arc<dyn PluginMetrics + Send + Sync>>,
 }
 
 /// Kafka producer trait for source tasks.

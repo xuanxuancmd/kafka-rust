@@ -18,3 +18,5 @@
 //! This module contains tests migrated from Java Kafka Connect runtime.
 
 mod distributed;
+mod isolation;
+mod test_plugins;

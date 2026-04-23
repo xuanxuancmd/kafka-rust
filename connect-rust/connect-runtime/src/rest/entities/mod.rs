@@ -142,7 +142,9 @@ impl std::fmt::Display for ConnectorState {
 
 /// Status of a connector with worker assignment.
 ///
-/// Corresponds to `ConnectorStatus` in Java.
+/// Corresponds to `ConnectorStateInfo` in Java (not ConnectorStatus).
+/// Note: In Java, ConnectorStateInfo includes name, connector state, tasks, and type.
+/// In Rust, this is named ConnectorStatus to avoid confusion with the simplified ConnectorStateInfo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorStatus {
     /// The name of the connector.
@@ -151,15 +153,24 @@ pub struct ConnectorStatus {
     pub connector: ConnectorStateInfo,
     /// The status of the tasks.
     pub tasks: Vec<TaskStatus>,
+    /// The type of the connector (source or sink).
+    #[serde(rename = "type")]
+    pub connector_type: ConnectorType,
 }
 
 impl ConnectorStatus {
     /// Creates a new ConnectorStatus.
-    pub fn new(name: String, connector: ConnectorStateInfo, tasks: Vec<TaskStatus>) -> Self {
+    pub fn new(
+        name: String,
+        connector: ConnectorStateInfo,
+        tasks: Vec<TaskStatus>,
+        connector_type: ConnectorType,
+    ) -> Self {
         Self {
             name,
             connector,
             tasks,
+            connector_type,
         }
     }
 }
@@ -263,19 +274,38 @@ impl CreateConnectorRequest {
 pub struct ConfigInfos {
     /// The name of the connector.
     pub name: String,
-    /// The validation results for each config key.
-    pub configs: Vec<ConfigInfo>,
     /// The number of errors found.
     pub error_count: i32,
+    /// The list of config group names.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// The validation results for each config key.
+    pub configs: Vec<ConfigInfo>,
 }
 
 impl ConfigInfos {
     /// Creates a new ConfigInfos.
-    pub fn new(name: String, configs: Vec<ConfigInfo>, error_count: i32) -> Self {
+    pub fn new(
+        name: String,
+        error_count: i32,
+        groups: Vec<String>,
+        configs: Vec<ConfigInfo>,
+    ) -> Self {
         Self {
             name,
-            configs,
             error_count,
+            groups,
+            configs,
+        }
+    }
+
+    /// Creates a new ConfigInfos without groups.
+    pub fn without_groups(name: String, configs: Vec<ConfigInfo>, error_count: i32) -> Self {
+        Self {
+            name,
+            error_count,
+            groups: Vec::new(),
+            configs,
         }
     }
 }
@@ -566,6 +596,144 @@ impl TaskOffset {
     }
 }
 
+/// Worker status for health check endpoint.
+///
+/// Corresponds to `WorkerStatus` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerStatus {
+    /// The status string (e.g., "healthy", "unhealthy", "starting").
+    pub status: String,
+    /// The status message with details.
+    pub message: String,
+}
+
+impl WorkerStatus {
+    /// Creates a healthy worker status.
+    pub fn healthy() -> Self {
+        WorkerStatus {
+            status: "healthy".to_string(),
+            message: "Worker has completed startup and is ready to handle requests.".to_string(),
+        }
+    }
+
+    /// Creates a starting worker status.
+    ///
+    /// # Arguments
+    ///
+    /// * `status_details` - Optional details about the startup status
+    pub fn starting(status_details: Option<&str>) -> Self {
+        let message = if let Some(details) = status_details {
+            format!("Worker is still starting up. {}", details)
+        } else {
+            "Worker is still starting up.".to_string()
+        };
+        WorkerStatus {
+            status: "starting".to_string(),
+            message,
+        }
+    }
+
+    /// Creates an unhealthy worker status.
+    ///
+    /// # Arguments
+    ///
+    /// * `status_details` - Optional details about the unhealthy status
+    pub fn unhealthy(status_details: Option<&str>) -> Self {
+        let message = if let Some(details) = status_details {
+            format!("Worker was unable to handle this request and may be unable to handle other requests. {}", details)
+        } else {
+            "Worker was unable to handle this request and may be unable to handle other requests."
+                .to_string()
+        };
+        WorkerStatus {
+            status: "unhealthy".to_string(),
+            message,
+        }
+    }
+
+    /// Creates a new WorkerStatus with custom values.
+    pub fn new(status: String, message: String) -> Self {
+        WorkerStatus { status, message }
+    }
+}
+
+/// Logger level information.
+///
+/// Corresponds to `LoggerLevel` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoggerLevel {
+    /// The log level (e.g., "DEBUG", "INFO", "WARN", "ERROR").
+    pub level: String,
+    /// Last modified timestamp (Unix epoch milliseconds).
+    #[serde(rename = "last_modified")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<i64>,
+}
+
+impl LoggerLevel {
+    /// Creates a new LoggerLevel.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The log level string
+    /// * `last_modified` - Optional last modified timestamp
+    pub fn new(level: String, last_modified: Option<i64>) -> Self {
+        LoggerLevel {
+            level,
+            last_modified,
+        }
+    }
+
+    /// Creates a LoggerLevel without last_modified.
+    pub fn with_level(level: String) -> Self {
+        LoggerLevel::new(level, None)
+    }
+}
+
+/// Active topics information for a connector.
+///
+/// Corresponds to `ActiveTopicsInfo` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveTopicsInfo {
+    /// The connector name.
+    pub connector: String,
+    /// Active topics for the connector.
+    #[serde(default)]
+    pub topics: Vec<String>,
+}
+
+impl ActiveTopicsInfo {
+    /// Creates a new ActiveTopicsInfo.
+    pub fn new(connector: String, topics: Vec<String>) -> Self {
+        ActiveTopicsInfo { connector, topics }
+    }
+}
+
+/// Plugin information for a connector plugin.
+///
+/// Corresponds to `PluginInfo` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginInfo {
+    /// The plugin class name.
+    pub class: String,
+    /// Plugin type (source, sink, connector).
+    #[serde(rename = "type")]
+    pub plugin_type: String,
+    /// Plugin version.
+    pub version: String,
+}
+
+impl PluginInfo {
+    /// Creates a new PluginInfo.
+    pub fn new(class: String, plugin_type: String, version: String) -> Self {
+        PluginInfo {
+            class,
+            plugin_type,
+            version,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +820,70 @@ mod tests {
         let info = WorkerInfo::new("3.0.0".to_string(), "abc123".to_string());
         assert_eq!(info.version, "3.0.0");
         assert!(info.kafka_cluster_id.is_none());
+    }
+
+    #[test]
+    fn test_worker_status_healthy() {
+        let status = WorkerStatus::healthy();
+        assert_eq!(status.status, "healthy");
+        assert!(status.message.contains("ready"));
+    }
+
+    #[test]
+    fn test_worker_status_starting() {
+        let status = WorkerStatus::starting(Some("Waiting for leader"));
+        assert_eq!(status.status, "starting");
+        assert!(status.message.contains("Waiting for leader"));
+    }
+
+    #[test]
+    fn test_worker_status_unhealthy() {
+        let status = WorkerStatus::unhealthy(None);
+        assert_eq!(status.status, "unhealthy");
+        assert!(status.message.contains("unable to handle"));
+    }
+
+    #[test]
+    fn test_logger_level() {
+        let level = LoggerLevel::new("INFO".to_string(), Some(1234567890));
+        assert_eq!(level.level, "INFO");
+        assert_eq!(level.last_modified, Some(1234567890));
+
+        let level_no_time = LoggerLevel::with_level("DEBUG".to_string());
+        assert_eq!(level_no_time.level, "DEBUG");
+        assert!(level_no_time.last_modified.is_none());
+    }
+
+    #[test]
+    fn test_logger_level_serialization() {
+        let level = LoggerLevel::new("WARN".to_string(), Some(1000));
+        let json = serde_json::to_string(&level).unwrap();
+        assert!(json.contains("\"level\":\"WARN\""));
+        assert!(json.contains("\"last_modified\":1000"));
+    }
+
+    #[test]
+    fn test_active_topics_info() {
+        let info = ActiveTopicsInfo::new(
+            "test-connector".to_string(),
+            vec!["topic1".to_string(), "topic2".to_string()],
+        );
+        assert_eq!(info.connector, "test-connector");
+        assert_eq!(info.topics.len(), 2);
+    }
+
+    #[test]
+    fn test_plugin_info() {
+        let plugin = PluginInfo::new(
+            "org.apache.kafka.connect.file.FileStreamSourceConnector".to_string(),
+            "source".to_string(),
+            "1.0.0".to_string(),
+        );
+        assert_eq!(
+            plugin.class,
+            "org.apache.kafka.connect.file.FileStreamSourceConnector"
+        );
+        assert_eq!(plugin.plugin_type, "source");
+        assert_eq!(plugin.version, "1.0.0");
     }
 }

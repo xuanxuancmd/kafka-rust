@@ -21,6 +21,8 @@
 //! need to shut down but are blocked on offset reads.
 //!
 //! Corresponds to `org.apache.kafka.connect.storage.CloseableOffsetStorageReader` in Java.
+//! 
+//! Thread safety: All methods are async-safe and can be called from tokio runtime context.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,7 +70,7 @@ impl CloseableOffsetStorageReader {
     /// # Errors
     /// Panics if the reader is closed
     pub async fn offset(&self, partition: HashMap<String, Value>) -> Option<HashMap<String, Value>> {
-        self.check_closed();
+        self.check_closed().await;
         self.reader.offset(partition).await
     }
 
@@ -86,7 +88,7 @@ impl CloseableOffsetStorageReader {
         &self,
         partitions: Vec<HashMap<String, Value>>,
     ) -> HashMap<PartitionKey, Option<HashMap<String, Value>>> {
-        self.check_closed();
+        self.check_closed().await;
         self.reader.offsets(partitions).await
     }
 
@@ -108,9 +110,9 @@ impl CloseableOffsetStorageReader {
     }
 
     /// Checks if the reader is closed and panics if so.
-    fn check_closed(&self) {
-        // Use blocking_lock since this is a quick check
-        let closed = self.closed.blocking_lock();
+    async fn check_closed(&self) {
+        // Use async lock since we're in async context
+        let closed = self.closed.lock().await;
         if *closed {
             panic!("CloseableOffsetStorageReader is closed");
         }

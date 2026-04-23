@@ -58,7 +58,7 @@ pub struct WorkerSinkTaskContext {
     /// Errant record reporter for DLQ handling.
     errant_record_reporter: Option<Box<dyn ErrantRecordReporter>>,
     /// Plugin metrics for this task.
-    plugin_metrics: Option<Box<dyn PluginMetrics>>,
+    plugin_metrics: Option<Box<dyn PluginMetrics + Send + Sync>>,
     /// Whether the connector should pause.
     should_pause: bool,
 }
@@ -167,7 +167,7 @@ impl WorkerSinkTaskContext {
     }
 
     /// Set the plugin metrics.
-    pub fn set_plugin_metrics(&mut self, metrics: Box<dyn PluginMetrics>) {
+    pub fn set_plugin_metrics(&mut self, metrics: Box<dyn PluginMetrics + Send + Sync>) {
         self.plugin_metrics = Some(metrics);
     }
 
@@ -208,7 +208,7 @@ impl SinkTaskContext for WorkerSinkTaskContext {
     }
 
     /// Get the plugin metrics.
-    fn plugin_metrics(&self) -> Option<&dyn PluginMetrics> {
+    fn plugin_metrics(&self) -> Option<&(dyn PluginMetrics + Send + Sync)> {
         self.plugin_metrics.as_ref().map(|m| m.as_ref())
     }
 }

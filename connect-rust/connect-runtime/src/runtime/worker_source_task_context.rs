@@ -38,7 +38,7 @@ use std::collections::HashMap;
 /// Corresponds to `org.apache.kafka.connect.runtime.WorkerSourceTaskContext` in Java.
 pub struct WorkerSourceTaskContext {
     /// Offset storage reader for reading previously committed offsets.
-    offset_storage_reader: Option<Box<dyn OffsetStorageReader>>,
+    offset_storage_reader: Option<Box<dyn OffsetStorageReader + Send + Sync>>,
     /// The task ID for this source task.
     task_id: ConnectorTaskId,
     /// Configuration state for the cluster.
@@ -46,7 +46,7 @@ pub struct WorkerSourceTaskContext {
     /// Transaction context for exactly-once semantics.
     transaction_context: Option<WorkerTransactionContext>,
     /// Plugin metrics for this task.
-    plugin_metrics: Option<Box<dyn PluginMetrics>>,
+    plugin_metrics: Option<Box<dyn PluginMetrics + Send + Sync>>,
 }
 
 impl WorkerSourceTaskContext {
@@ -61,11 +61,11 @@ impl WorkerSourceTaskContext {
     ///
     /// Corresponds to Java: `public WorkerSourceTaskContext(OffsetStorageReader reader, ConnectorTaskId id, ClusterConfigState configState, WorkerTransactionContext transactionContext, PluginMetrics pluginMetrics)`
     pub fn new(
-        offset_storage_reader: Option<Box<dyn OffsetStorageReader>>,
+        offset_storage_reader: Option<Box<dyn OffsetStorageReader + Send + Sync>>,
         task_id: ConnectorTaskId,
         config_state: Option<HashMap<String, String>>,
         transaction_context: Option<WorkerTransactionContext>,
-        plugin_metrics: Option<Box<dyn PluginMetrics>>,
+        plugin_metrics: Option<Box<dyn PluginMetrics + Send + Sync>>,
     ) -> Self {
         WorkerSourceTaskContext {
             offset_storage_reader,
@@ -121,7 +121,7 @@ impl SourceTaskContext for WorkerSourceTaskContext {
     }
 
     /// Get the plugin metrics.
-    fn plugin_metrics(&self) -> Option<&dyn PluginMetrics> {
+    fn plugin_metrics(&self) -> Option<&(dyn PluginMetrics + Send + Sync)> {
         self.plugin_metrics.as_ref().map(|m| m.as_ref())
     }
 }

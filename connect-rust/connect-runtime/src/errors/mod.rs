@@ -25,7 +25,13 @@
 //! - **Stage**: Represents different stages in the processing pipeline
 //! - **ProcessingContext**: Holds state about an operation being processed
 //! - **ErrorReporter**: Trait for reporting errors
+//! - **LogReporter**: Simple log reporter for basic error logging
+//! - **LogReporterSink**: Sink task specific log reporter
+//! - **LogReporterSource**: Source task specific log reporter
+//! - **DeadLetterQueueReporter**: Reports errors to a dead letter queue topic
+//! - **WorkerErrantRecordReporter**: Reports errant records from Sink Tasks
 //! - **ErrorHandlingMetrics**: Tracks error handling statistics
+//! - **dlq_headers**: Header constants for DLQ records
 
 mod error_reporter;
 mod metrics;
@@ -33,6 +39,7 @@ mod processing_context;
 mod retry_with_tolerance_operator;
 mod stage;
 mod tolerance_type;
+mod worker_errant_record_reporter;
 
 pub use error_reporter::*;
 pub use metrics::*;
@@ -40,6 +47,7 @@ pub use processing_context::*;
 pub use retry_with_tolerance_operator::*;
 pub use stage::*;
 pub use tolerance_type::*;
+pub use worker_errant_record_reporter::*;
 
 #[cfg(test)]
 mod tests {

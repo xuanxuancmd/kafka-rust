@@ -35,6 +35,7 @@ pub mod plugins;
 pub mod plugins_recommenders;
 pub mod reflection_scanner;
 pub mod service_loader_scanner;
+pub mod test_plugins;
 pub mod versioned_plugin_loading_exception;
 
 // Re-export key types for convenience

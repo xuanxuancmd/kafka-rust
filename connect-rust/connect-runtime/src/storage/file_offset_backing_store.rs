@@ -194,8 +194,11 @@ impl OffsetBackingStore for FileOffsetBackingStore {
     }
 
     fn start(&mut self) {
-        let mut started = self.started.blocking_write();
-        *started = true;
+        // Use block_in_place to safely perform blocking operations in async context
+        let mut started_guard = tokio::task::block_in_place(|| {
+            self.started.blocking_write()
+        });
+        *started_guard = true;
 
         info!("Starting FileOffsetBackingStore with file {}", self.file_path.display());
 
@@ -221,8 +224,11 @@ impl OffsetBackingStore for FileOffsetBackingStore {
     }
 
     fn stop(&mut self) {
-        let mut started = self.started.blocking_write();
-        *started = false;
+        // Use block_in_place to safely perform blocking operations in async context
+        let mut started_guard = tokio::task::block_in_place(|| {
+            self.started.blocking_write()
+        });
+        *started_guard = false;
 
         // Save data to file before stopping
         let data = self.memory_store.data_map().clone();

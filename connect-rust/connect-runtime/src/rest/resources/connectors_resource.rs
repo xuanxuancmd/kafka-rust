@@ -116,6 +116,7 @@ impl ConnectorsResource {
             name.clone(),
             ConnectorStateInfo::new(ConnectorState::Running, "worker-1".to_string()),
             vec![],
+            ConnectorType::Source, // Default to Source for test
         );
         let mut statuses = self.statuses.write().await;
         statuses.insert(name.clone(), status);

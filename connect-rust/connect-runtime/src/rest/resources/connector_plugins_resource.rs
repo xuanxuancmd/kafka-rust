@@ -205,8 +205,9 @@ impl ConnectorPluginsResource {
         // Build ConfigInfos result
         let result = ConfigInfos::new(
             config.get("name").cloned().unwrap_or_else(|| "connector".to_string()),
-            configs,
             error_count,
+            Vec::new(), // groups - empty for basic validation
+            configs,
         );
 
         Ok(Json(result))

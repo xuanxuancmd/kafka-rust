@@ -783,4 +783,366 @@ mod tests {
         assert_eq!(coordinator.current_protocol_version(), 1);
         assert!(!coordinator.is_stopped());
     }
+
+    // ===== Cross-crate 接缝验证测试 =====
+    // 验证 connect-runtime 可以正确使用 kafka-clients-mock 的 MockWorkerCoordinator
+
+    /// 测试跨 crate WorkerCoordinator 接缝：使用 kafka-clients-mock 的 coordinator
+    /// 验证 API 契约与 Java WorkerCoordinator 一致（核心路径：join/sync/leave/poll/rejoin）
+    #[test]
+    fn test_cross_crate_coordinator_api_contract() {
+        use kafka_clients_mock::coordinator::ConnectProtocolCompatibility;
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+
+        // 创建跨 crate coordinator
+        let coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // 验证 API 契约一致
+        assert_eq!(coordinator.rest_url(), "http://localhost:8083");
+        assert_eq!(coordinator.group_id(), "connect-group");
+        assert_eq!(coordinator.protocol_type(), "connect");
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Unjoined
+        );
+        assert_eq!(
+            coordinator.generation_id(),
+            kafka_clients_mock::coordinator::NO_GENERATION
+        );
+        assert_eq!(
+            coordinator.member_id(),
+            kafka_clients_mock::coordinator::UNKNOWN_MEMBER_ID
+        );
+        assert!(coordinator.coordinator_unknown());
+        assert!(coordinator.assignment().is_none());
+    }
+
+    /// 测试跨 crate join/sync 流程
+    #[test]
+    fn test_cross_crate_join_sync_flow() {
+        use kafka_clients_mock::coordinator::ConnectProtocolCompatibility;
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // join_group
+        let join_result = coordinator.join_group();
+        assert!(join_result.is_ok());
+        let join_response = join_result.unwrap();
+        assert!(join_response.is_leader()); // First member becomes leader
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Syncing
+        );
+
+        // sync_group
+        let sync_result = coordinator.sync_group();
+        assert!(sync_result.is_ok());
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Stable
+        );
+        assert!(coordinator.assignment().is_some());
+    }
+
+    /// 测试跨 crate leave_group 流程
+    #[test]
+    fn test_cross_crate_leave_group_flow() {
+        use kafka_clients_mock::coordinator::ConnectProtocolCompatibility;
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Join and sync first
+        coordinator.join_group().unwrap();
+        coordinator.sync_group().unwrap();
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Stable
+        );
+
+        // leave_group
+        let leave_result = coordinator.leave_group();
+        assert!(leave_result.is_ok());
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Unjoined
+        );
+        assert!(coordinator.assignment().is_none());
+        assert_eq!(
+            coordinator.generation_id(),
+            kafka_clients_mock::coordinator::NO_GENERATION
+        );
+    }
+
+    /// 测试跨 crate request_rejoin 流程
+    #[test]
+    fn test_cross_crate_request_rejoin() {
+        use kafka_clients_mock::coordinator::ConnectProtocolCompatibility;
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Ensure active group first
+        coordinator.ensure_active_group().unwrap();
+        assert!(!coordinator.rejoin_needed_or_pending());
+
+        // Request rejoin
+        coordinator.request_rejoin("test reason");
+        assert!(coordinator.rejoin_needed_or_pending());
+    }
+
+    // ===== 协议不兼容失败路径测试 =====
+    // 验证 CONFIG_MISMATCH 触发 rejoin
+
+    /// 测试 CONFIG_MISMATCH assignment 触发 rejoin
+    /// Java WorkerCoordinator: when assignment.failed() = true, rejoinNeededOrPending() returns true
+    #[test]
+    fn test_config_mismatch_triggers_rejoin() {
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+        use kafka_clients_mock::coordinator::{ConnectProtocolCompatibility, ExtendedAssignment};
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Join and sync to get stable assignment
+        coordinator.join_group().unwrap();
+        coordinator.sync_group().unwrap();
+        assert_eq!(
+            coordinator.state(),
+            kafka_clients_mock::coordinator::MemberState::Stable
+        );
+
+        // Set a failed assignment (CONFIG_MISMATCH)
+        let failed_assignment = ExtendedAssignment::new(
+            ExtendedAssignment::CONNECT_PROTOCOL_V1,
+            ExtendedAssignment::CONFIG_MISMATCH, // Error code 1 = CONFIG_MISMATCH
+            Some("leader".to_string()),
+            Some("http://leader:8083".to_string()),
+            100,
+            vec![], // No connectors assigned
+            vec![], // No tasks assigned
+            vec![], // No revoked connectors
+            vec![], // No revoked tasks
+            0,
+        );
+
+        coordinator.set_assignment(failed_assignment);
+
+        // Verify: failed assignment triggers rejoinNeededOrPending()
+        assert!(coordinator.assignment().unwrap().failed());
+        assert!(
+            coordinator.rejoin_needed_or_pending(),
+            "CONFIG_MISMATCH should trigger rejoin"
+        );
+    }
+
+    /// 测试协议不兼容时触发 rejoin 和错误恢复
+    /// Java: when protocol version mismatch, coordinator should requestRejoin()
+    #[test]
+    fn test_protocol_incompatibility_recovery() {
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+        use kafka_clients_mock::coordinator::{
+            ConnectProtocolCompatibility, ExtendedAssignment, LeaderState,
+        };
+        use std::collections::HashMap;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Sessioned, // Start with V2
+        );
+
+        // Join and sync
+        coordinator.join_group().unwrap();
+        coordinator.sync_group().unwrap();
+        assert_eq!(coordinator.current_protocol_version(), 2); // V2
+
+        // Simulate protocol downgrade scenario: leader selects V1 (Compatible)
+        // In Java, this would happen when leader's protocol selection differs
+        let v1_assignment = ExtendedAssignment::new(
+            1, // V1 protocol version
+            ExtendedAssignment::NO_ERROR,
+            Some("leader".to_string()),
+            Some("http://leader:8083".to_string()),
+            100,
+            vec!["connector-a".to_string()],
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+
+        coordinator.set_assignment(v1_assignment.clone());
+
+        // After receiving V1 assignment, worker should update protocol version
+        // Note: In Java, this happens in onJoinComplete()
+        assert_eq!(coordinator.assignment().unwrap().version(), 1);
+        assert!(!coordinator.assignment().unwrap().failed());
+
+        // If assignment indicates protocol mismatch (error = CONFIG_MISMATCH),
+        // worker should request rejoin
+        let mismatch_assignment = ExtendedAssignment::new(
+            1,
+            ExtendedAssignment::CONFIG_MISMATCH,
+            Some("leader".to_string()),
+            Some("http://leader:8083".to_string()),
+            -1, // Invalid offset indicates config mismatch
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+
+        coordinator.set_assignment(mismatch_assignment);
+
+        // CONFIG_MISMATCH assignment should trigger rejoin
+        assert!(coordinator.assignment().unwrap().failed());
+        assert!(coordinator.rejoin_needed_or_pending());
+
+        // Recovery: ensure active group should work
+        let recovery_result = coordinator.ensure_active_group();
+        assert!(
+            recovery_result.is_ok(),
+            "Coordinator should recover by rejoining"
+        );
+    }
+
+    /// 测试 assignment snapshot 与 leader state 一致性
+    /// Java WorkerCoordinator: assignmentSnapshot tracks current assignment state
+    #[test]
+    fn test_assignment_snapshot_consistency() {
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+        use kafka_clients_mock::coordinator::{ConnectProtocolCompatibility, ExtendedAssignment};
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Initial state: no assignment
+        assert!(coordinator.assignment().is_none());
+        assert!(
+            coordinator.last_completed_generation_id()
+                == kafka_clients_mock::coordinator::NO_GENERATION
+        );
+
+        // After join/sync: should have assignment
+        coordinator.ensure_active_group().unwrap();
+        assert!(coordinator.assignment().is_some());
+        assert!(coordinator.last_completed_generation_id() >= 1);
+
+        // Assignment snapshot should reflect current state
+        let assignment = coordinator.assignment().unwrap();
+        assert_eq!(assignment.error(), ExtendedAssignment::NO_ERROR);
+        assert!(!assignment.failed());
+    }
+
+    /// 测试 poll heartbeat 和 rejoin 逻辑
+    /// Java WorkerCoordinator.poll(): checks coordinatorUnknown, rejoinNeededOrPending, then heartbeat
+    #[test]
+    fn test_poll_with_rejoin_needed() {
+        use kafka_clients_mock::coordinator::ConnectProtocolCompatibility;
+        use kafka_clients_mock::coordinator::MockWorkerCoordinator as KafkaMockCoordinator;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Poll when coordinator unknown should fail
+        let poll_result = coordinator.poll(1000);
+        assert!(
+            poll_result.is_err(),
+            "Poll should fail when coordinator unknown"
+        );
+
+        // Ensure active group first
+        coordinator.ensure_active_group().unwrap();
+
+        // Poll should succeed when stable
+        let poll_result = coordinator.poll(1000);
+        assert!(poll_result.is_ok(), "Poll should succeed when stable");
+
+        // Request rejoin
+        coordinator.request_rejoin("test poll rejoin");
+        assert!(coordinator.rejoin_needed_or_pending());
+
+        // Poll with rejoin needed should trigger ensure_active_group internally
+        let poll_result = coordinator.poll(100);
+        assert!(
+            poll_result.is_ok(),
+            "Poll should handle rejoin automatically"
+        );
+        assert!(
+            !coordinator.rejoin_needed_or_pending(),
+            "Rejoin should be completed"
+        );
+    }
+
+    /// 测试 owner URL 查询（leader state 功能）
+    /// Java WorkerCoordinator: leader can query owner URLs for connectors/tasks
+    #[test]
+    fn test_leader_state_owner_url_queries() {
+        use kafka_clients_mock::coordinator::{
+            ConnectProtocolCompatibility, ConnectorTaskId, LeaderState,
+            MockWorkerCoordinator as KafkaMockCoordinator,
+        };
+        use std::collections::HashMap;
+
+        let mut coordinator = KafkaMockCoordinator::new(
+            "http://localhost:8083".to_string(),
+            "connect-group".to_string(),
+            ConnectProtocolCompatibility::Compatible,
+        );
+
+        // Set up as leader with leader state
+        coordinator.ensure_active_group().unwrap();
+        assert!(coordinator.is_leader());
+
+        // Create leader state with assignments
+        let all_members = HashMap::new();
+        let mut connector_assignment = HashMap::new();
+        connector_assignment.insert("worker-1".to_string(), vec!["conn-1".to_string()]);
+
+        let mut task_assignment = HashMap::new();
+        task_assignment.insert(
+            "worker-1".to_string(),
+            vec![ConnectorTaskId::new("conn-1".to_string(), 0)],
+        );
+
+        let leader_state = LeaderState::new(all_members, connector_assignment, task_assignment);
+        coordinator.set_leader_state(Some(leader_state));
+
+        // Query owner URLs
+        let owner_url = coordinator.owner_url_for_connector("conn-1");
+        // Note: owner URL depends on all_members state
+        // In mock, if no members have URLs, returns None
+
+        let task_owner_url =
+            coordinator.owner_url_for_task(&ConnectorTaskId::new("conn-1".to_string(), 0));
+        // Same logic applies for task queries
+    }
 }

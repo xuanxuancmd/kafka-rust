@@ -24,6 +24,8 @@ use std::fmt;
 ///
 /// This is used to determine what exceptions are tolerable for each stage
 /// when `errors.tolerance=all` is configured.
+///
+/// Corresponds to Java: `org.apache.kafka.connect.runtime.errors.Stage`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stage {
     /// Transformation stage - applying transformations to records
@@ -38,6 +40,8 @@ pub enum Stage {
     KAFKA_PRODUCE,
     /// Kafka consume stage - consuming records from Kafka
     KAFKA_CONSUME,
+    /// Task put stage - sink task put operation
+    TASK_PUT,
 }
 
 impl Stage {
@@ -50,6 +54,7 @@ impl Stage {
             Stage::HEADER_CONVERTER => "HEADER_CONVERTER",
             Stage::KAFKA_PRODUCE => "KAFKA_PRODUCE",
             Stage::KAFKA_CONSUME => "KAFKA_CONSUME",
+            Stage::TASK_PUT => "TASK_PUT",
         }
     }
 }
@@ -72,6 +77,7 @@ mod tests {
         assert_eq!(Stage::HEADER_CONVERTER.name(), "HEADER_CONVERTER");
         assert_eq!(Stage::KAFKA_PRODUCE.name(), "KAFKA_PRODUCE");
         assert_eq!(Stage::KAFKA_CONSUME.name(), "KAFKA_CONSUME");
+        assert_eq!(Stage::TASK_PUT.name(), "TASK_PUT");
     }
 
     #[test]

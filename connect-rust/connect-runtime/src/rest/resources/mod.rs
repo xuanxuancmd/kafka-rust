@@ -23,7 +23,15 @@
 mod connectors_resource;
 mod tasks_resource;
 mod connector_plugins_resource;
+mod logging_resource;
+mod root_resource;
+mod internal_cluster_resource;
+mod internal_connect_resource;
 
 pub use connectors_resource::*;
 pub use tasks_resource::*;
 pub use connector_plugins_resource::*;
+pub use logging_resource::*;
+pub use root_resource::*;
+pub use internal_cluster_resource::*;
+pub use internal_connect_resource::*;

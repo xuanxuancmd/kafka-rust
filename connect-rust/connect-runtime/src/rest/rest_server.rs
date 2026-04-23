@@ -47,15 +47,23 @@ pub struct RestServer {
     tasks_resource: Arc<TasksResource>,
     /// Connector plugins resource handler.
     plugins_resource: Arc<ConnectorPluginsResource>,
-    /// Server configuration.
-    config: RestServerConfig,
+    /// Internal server configuration for binding and identity.
+    internal_config: InternalServerConfig,
     /// Whether the server is started.
     started: Arc<RwLock<bool>>,
 }
 
-/// Configuration for the REST server.
+/// Internal server configuration for RestServer instance.
+/// 
+/// This is a simple configuration struct used internally by RestServer
+/// for binding address and server identity. For full REST configuration,
+/// use `RestServerConfig` from `rest_server_config.rs`.
+///
+/// Note: This struct is intentionally named differently to avoid conflict
+/// with `RestServerConfig` from `rest_server_config.rs` which is the proper
+/// Java-aligned implementation.
 #[derive(Debug, Clone)]
-pub struct RestServerConfig {
+pub struct InternalServerConfig {
     /// Host address to bind to.
     pub host: String,
     /// Port to listen on.
@@ -66,9 +74,9 @@ pub struct RestServerConfig {
     pub commit: String,
 }
 
-impl Default for RestServerConfig {
+impl Default for InternalServerConfig {
     fn default() -> Self {
-        RestServerConfig {
+        InternalServerConfig {
             host: "localhost".to_string(),
             port: 8083,
             version: "3.0.0".to_string(),
@@ -77,15 +85,15 @@ impl Default for RestServerConfig {
     }
 }
 
-impl RestServerConfig {
-    /// Creates a new RestServerConfig with default values.
+impl InternalServerConfig {
+    /// Creates a new InternalServerConfig with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Creates a new RestServerConfig with custom host and port.
+    /// Creates a new InternalServerConfig with custom host and port.
     pub fn with_host_port(host: String, port: u16) -> Self {
-        RestServerConfig {
+        InternalServerConfig {
             host,
             port,
             version: "3.0.0".to_string(),
@@ -110,7 +118,7 @@ impl RestServer {
             connectors_resource,
             tasks_resource,
             plugins_resource,
-            config: RestServerConfig::new(),
+            internal_config: InternalServerConfig::new(),
             started: Arc::new(RwLock::new(false)),
         }
     }
@@ -120,20 +128,20 @@ impl RestServer {
         connectors_resource: Arc<ConnectorsResource>,
         tasks_resource: Arc<TasksResource>,
         plugins_resource: Arc<ConnectorPluginsResource>,
-        config: RestServerConfig,
+        internal_config: InternalServerConfig,
     ) -> Self {
         RestServer {
             connectors_resource,
             tasks_resource,
             plugins_resource,
-            config,
+            internal_config,
             started: Arc::new(RwLock::new(false)),
         }
     }
 
-    /// Returns the server configuration.
-    pub fn config(&self) -> &RestServerConfig {
-        &self.config
+    /// Returns the internal server configuration.
+    pub fn internal_config(&self) -> &InternalServerConfig {
+        &self.internal_config
     }
 
     /// Returns whether the server is started.
@@ -162,8 +170,8 @@ impl RestServer {
     /// Full handler implementations will use Extension to access resources.
     pub fn create_router(&self) -> Router {
         let server_info = ServerInfo::new(
-            self.config.version.clone(),
-            self.config.commit.clone(),
+            self.internal_config.version.clone(),
+            self.internal_config.commit.clone(),
         );
 
         Router::new()
@@ -197,24 +205,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rest_server_config_default() {
-        let config = RestServerConfig::new();
+    fn test_internal_server_config_default() {
+        let config = InternalServerConfig::new();
         assert_eq!(config.host, "localhost");
         assert_eq!(config.port, 8083);
         assert_eq!(config.bind_address(), "localhost:8083");
     }
 
     #[test]
-    fn test_rest_server_config_custom() {
-        let config = RestServerConfig::with_host_port("127.0.0.1".to_string(), 9092);
+    fn test_internal_server_config_custom() {
+        let config = InternalServerConfig::with_host_port("127.0.0.1".to_string(), 9092);
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 9092);
         assert_eq!(config.bind_address(), "127.0.0.1:9092");
     }
 
     #[test]
-    fn test_rest_server_config_version() {
-        let config = RestServerConfig::default();
+    fn test_internal_server_config_version() {
+        let config = InternalServerConfig::default();
         assert_eq!(config.version, "3.0.0");
     }
 
@@ -257,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rest_server_with_config() {
-        let config = RestServerConfig::with_host_port("0.0.0.0".to_string(), 9000);
+        let config = InternalServerConfig::with_host_port("0.0.0.0".to_string(), 9000);
         let connectors_resource = Arc::new(ConnectorsResource::new_for_test());
         let tasks_resource = Arc::new(TasksResource::new_for_test());
         let plugins_resource = Arc::new(ConnectorPluginsResource::new_for_test());
@@ -269,8 +277,8 @@ mod tests {
             config,
         );
         
-        assert_eq!(server.config().host, "0.0.0.0");
-        assert_eq!(server.config().port, 9000);
+        assert_eq!(server.internal_config().host, "0.0.0.0");
+        assert_eq!(server.internal_config().port, 9000);
     }
 
     #[tokio::test]
