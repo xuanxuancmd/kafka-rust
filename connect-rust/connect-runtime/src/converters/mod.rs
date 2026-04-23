@@ -1,27 +1,40 @@
-//! Converters Module
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Converter implementations for primitive types.
 //!
-//! This module provides converter implementations for Kafka Connect runtime.
-//! These converters handle serialization and deserialization of primitive types.
+//! This corresponds to `org.apache.kafka.connect.converters` in Java.
 
-pub mod boolean_converter;
-pub mod boolean_converter_config;
-pub mod byte_array_converter;
-pub mod double_converter;
-pub mod float_converter;
-pub mod integer_converter;
-pub mod long_converter;
-pub mod number_converter;
-pub mod number_converter_config;
-pub mod short_converter;
+mod boolean_converter;
+mod boolean_converter_config;
+mod byte_array_converter;
+mod double_converter;
+mod float_converter;
+mod integer_converter;
+mod long_converter;
+mod number_converter;
+mod number_converter_config;
+mod short_converter;
 
-// Re-export for convenience
-pub use boolean_converter::BooleanConverter;
-pub use boolean_converter_config::BooleanConverterConfig;
-pub use byte_array_converter::ByteArrayConverter;
-pub use double_converter::DoubleConverter;
-pub use float_converter::FloatConverter;
-pub use integer_converter::IntegerConverter;
-pub use long_converter::LongConverter;
-pub use number_converter::NumberConverter;
-pub use number_converter_config::NumberConverterConfig;
-pub use short_converter::ShortConverter;
+pub use boolean_converter::*;
+pub use boolean_converter_config::*;
+pub use byte_array_converter::*;
+pub use double_converter::*;
+pub use float_converter::*;
+pub use integer_converter::*;
+pub use long_converter::*;
+pub use number_converter::*;
+pub use number_converter_config::*;
+pub use short_converter::*;

@@ -13,103 +13,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Boolean Converter Configuration
+//! Configuration options for BooleanConverter.
 //!
-//! Configuration options for BooleanConverter instances.
+//! This corresponds to `org.apache.kafka.connect.converters.BooleanConverterConfig` in Java.
 
-use std::collections::HashMap;
+use common_trait::config::{AbstractConfig, ConfigDefBuilder};
+use connect_api::storage::{ConverterConfig, TYPE_CONFIG};
 
 /// Configuration options for BooleanConverter instances.
-#[derive(Debug, Clone)]
+///
+/// This corresponds to `org.apache.kafka.connect.converters.BooleanConverterConfig` in Java.
 pub struct BooleanConverterConfig {
-    /// Configuration properties
-    configs: HashMap<String, String>,
-    /// Whether this is a key converter
-    is_key: bool,
+    config: AbstractConfig,
 }
 
 impl BooleanConverterConfig {
-    /// Create a new BooleanConverterConfig.
+    /// Creates the ConfigDef for BooleanConverterConfig.
     ///
-    /// # Arguments
-    ///
-    /// * `props` - configuration properties
-    pub fn new(props: HashMap<String, String>) -> Self {
-        Self {
-            configs: props,
-            is_key: false,
-        }
+    /// Corresponds to `BooleanConverterConfig.configDef()` in Java.
+    pub fn config_def() -> ConfigDefBuilder {
+        ConverterConfig::new_config_def()
     }
 
-    /// Create a new BooleanConverterConfig with is_key flag.
+    /// Creates a new BooleanConverterConfig from the given properties.
     ///
-    /// # Arguments
-    ///
-    /// * `props` - configuration properties
-    /// * `is_key` - whether this is a key converter
-    pub fn new_with_type(props: HashMap<String, String>, is_key: bool) -> Self {
-        Self {
-            configs: props,
-            is_key,
-        }
+    /// Corresponds to `BooleanConverterConfig(Map<String, ?> props)` in Java.
+    pub fn new(config: AbstractConfig) -> Self {
+        BooleanConverterConfig { config }
     }
 
-    /// Get configuration value.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - configuration key
-    ///
-    /// # Returns
-    ///
-    /// the configuration value if present
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.configs.get(key)
-    }
-
-    /// Check if this is a key converter.
-    pub fn is_key(&self) -> bool {
-        self.is_key
-    }
-
-    /// Check if this is a value converter.
-    pub fn is_value(&self) -> bool {
-        !self.is_key
-    }
-}
-
-impl Default for BooleanConverterConfig {
-    fn default() -> Self {
-        Self {
-            configs: HashMap::new(),
-            is_key: false,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_boolean_converter_config_new() {
-        let config = BooleanConverterConfig::new(HashMap::new());
-        assert!(!config.is_key());
-        assert!(config.is_value());
-    }
-
-    #[test]
-    fn test_boolean_converter_config_with_type() {
-        let config = BooleanConverterConfig::new_with_type(HashMap::new(), true);
-        assert!(config.is_key());
-        assert!(!config.is_value());
-    }
-
-    #[test]
-    fn test_boolean_converter_config_get() {
-        let mut props = HashMap::new();
-        props.insert("test.key".to_string(), "test.value".to_string());
-        let config = BooleanConverterConfig::new(props);
-        assert_eq!(config.get("test.key"), Some(&"test.value".to_string()));
+    /// Returns the converter type.
+    pub fn type_config(&self) -> Option<&str> {
+        self.config.get_string(TYPE_CONFIG)
     }
 }

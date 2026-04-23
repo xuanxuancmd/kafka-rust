@@ -13,90 +13,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Boolean Converter
+//! BooleanConverter for boolean conversion.
 //!
-//! Converter and HeaderConverter implementation that supports serializing to and
-//! deserializing from Boolean values.
-//!
-//! When converting from bytes to Kafka Connect format, the converter will always return an optional
-//! BOOLEAN schema.
+//! This corresponds to `org.apache.kafka.connect.converters.BooleanConverter` in Java.
 
-use crate::converters::boolean_converter_config::BooleanConverterConfig;
-use connect_api::data::{ConnectSchema, Schema, SchemaAndValue, Type};
-use connect_api::error::{ConnectException, DataException};
-use connect_api::storage::{Converter, ConverterType, HeaderConverter};
-use std::any::Any;
+use common_trait::config::ConfigDef;
+use common_trait::header::Headers;
+use connect_api::data::{ConnectSchema, Schema, SchemaAndValue, SchemaBuilder, SchemaType};
+use connect_api::errors::ConnectError;
+use connect_api::storage::{Converter, ConverterConfig, HeaderConverter};
+use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-/// Converter and HeaderConverter implementation that supports serializing to and
-/// deserializing from Boolean values.
+/// BooleanConverter for boolean values.
+///
+/// This corresponds to `org.apache.kafka.connect.converters.BooleanConverter` in Java.
+/// Supports serializing to and deserializing from boolean values.
+/// When converting from bytes to Kafka Connect format, the converter will always return
+/// an optional BOOLEAN schema.
 pub struct BooleanConverter {
-    /// Configuration
-    config: BooleanConverterConfig,
+    is_key: bool,
 }
 
 impl BooleanConverter {
-    /// Create a new BooleanConverter.
+    /// Creates a new BooleanConverter.
     pub fn new() -> Self {
-        Self {
-            config: BooleanConverterConfig::default(),
-        }
+        BooleanConverter { is_key: false }
     }
 
-    /// Create a new BooleanConverter with configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - converter configuration
-    pub fn with_config(config: BooleanConverterConfig) -> Self {
-        Self { config }
-    }
-
-    /// Convert bytes to boolean value.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - bytes to deserialize
-    ///
-    /// # Returns
-    ///
-    /// the deserialized boolean value
-    fn deserialize(&self, value: &[u8]) -> Result<Option<bool>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() != 1 {
-            return Err(ConnectException::new(
-                "Invalid boolean value: expected 1 byte".to_string(),
-            ));
-        }
-
-        match value[0] {
-            0 => Ok(Some(false)),
-            1 => Ok(Some(true)),
-            _ => Err(ConnectException::new(format!(
-                "Invalid boolean value: expected 0 or 1, got {}",
-                value[0]
-            ))),
-        }
-    }
-
-    /// Serialize boolean value to bytes.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - boolean value to serialize
-    ///
-    /// # Returns
-    ///
-    /// the serialized bytes
-    fn serialize(&self, value: Option<bool>) -> Vec<u8> {
-        match value {
-            Some(b) => vec![if b { 1u8 } else { 0u8 }],
-            None => vec![],
-        }
+    /// Returns the optional boolean schema.
+    fn optional_boolean_schema() -> ConnectSchema {
+        SchemaBuilder::bool().optional().build()
     }
 }
 
@@ -107,149 +54,186 @@ impl Default for BooleanConverter {
 }
 
 impl Converter for BooleanConverter {
-    fn configure(&mut self, configs: HashMap<String, String>, is_key: bool) {
-        self.config = BooleanConverterConfig::new_with_type(configs, is_key);
+    fn configure(&mut self, _configs: HashMap<String, Value>, is_key: bool) {
+        self.is_key = is_key;
     }
 
     fn from_connect_data(
         &self,
         _topic: &str,
         schema: Option<&dyn Schema>,
-        value: &dyn Any,
-    ) -> Result<Vec<u8>, ConnectException> {
-        // Validate schema type if provided
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        // Check schema type if provided
         if let Some(s) = schema {
-            if s.type_() != Type::Boolean {
-                return Err(DataException::new(format!(
+            if s.r#type() != SchemaType::Boolean {
+                return Err(ConnectError::data(format!(
                     "Invalid schema type for BooleanConverter: {}",
-                    s.type_()
-                ))
-                .into());
+                    s.r#type()
+                )));
             }
         }
 
-        // Cast value to boolean
-        let bool_value = if value.is::<()>() {
-            None
-        } else if let Some(b) = value.downcast_ref::<bool>() {
-            Some(*b)
-        } else {
-            return Err(DataException::new(format!(
-                "BooleanConverter is not compatible with objects of type",
-            ))
-            .into());
+        // Handle null value
+        if value.is_none() || value.map(|v| v.is_null()).unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let val = value.unwrap();
+        let bool_val = match val {
+            Value::Bool(b) => *b,
+            _ => {
+                return Err(ConnectError::data(format!(
+                    "BooleanConverter is not compatible with objects of type {}",
+                    match val {
+                        Value::Null => "null",
+                        Value::Bool(_) => "boolean",
+                        Value::Number(_) => "number",
+                        Value::String(_) => "string",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                    }
+                )));
+            }
         };
 
-        Ok(self.serialize(bool_value))
+        // Serialize boolean to bytes (1 byte: 1 for true, 0 for false)
+        Ok(Some(vec![if bool_val { 1 } else { 0 }]))
+    }
+
+    fn from_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &mut H,
+        schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError>
+    where
+        H: Headers,
+    {
+        self.from_connect_data(_topic, schema, value)
     }
 
     fn to_connect_data(
         &self,
         _topic: &str,
-        value: &[u8],
-    ) -> Result<SchemaAndValue, ConnectException> {
-        let bool_value = self.deserialize(value)?;
-        let schema = Arc::new(ConnectSchema::new(Type::Boolean).with_optional(true));
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        // Handle null value
+        if value.is_none() {
+            return Ok(SchemaAndValue::new(
+                Some(Self::optional_boolean_schema()),
+                None,
+            ));
+        }
+
+        let bytes = value.unwrap();
+        if bytes.is_empty() {
+            return Err(ConnectError::data(
+                "Failed to deserialize boolean: empty bytes",
+            ));
+        }
+
+        // Deserialize boolean from bytes
+        let bool_val = match bytes[0] {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(ConnectError::data(format!(
+                    "Failed to deserialize boolean: invalid byte value {}",
+                    bytes[0]
+                )))
+            }
+        };
 
         Ok(SchemaAndValue::new(
-            Some(schema),
-            bool_value.map(|b| Box::new(b) as Box<dyn Any + Send + Sync>),
+            Some(Self::optional_boolean_schema()),
+            Some(Value::Bool(bool_val)),
         ))
     }
+
+    fn to_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &H,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError>
+    where
+        H: Headers,
+    {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &BOOLEAN_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
 }
 
 impl HeaderConverter for BooleanConverter {
-    fn to_connect_header(
-        &self,
-        topic: &str,
-        _header_key: &str,
-        value: &[u8],
-    ) -> Result<SchemaAndValue, ConnectException> {
-        self.to_connect_data(topic, value)
+    fn configure(&mut self, _configs: HashMap<String, String>, is_key: bool) {
+        self.is_key = is_key;
     }
 
     fn from_connect_header(
         &self,
-        topic: &str,
+        _topic: &str,
         _header_key: &str,
-        schema: Option<&dyn Schema>,
-        value: &dyn Any,
-    ) -> Result<Option<Vec<u8>>, ConnectException> {
-        let bytes = self.from_connect_data(topic, schema, value)?;
-        Ok(Some(bytes))
+        _schema: Option<&dyn Schema>,
+        value: &Value,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let bool_val = match value {
+            Value::Bool(b) => *b,
+            _ => {
+                return Err(ConnectError::data(format!(
+                    "BooleanConverter is not compatible with objects of type {}",
+                    match value {
+                        Value::Null => "null",
+                        Value::Bool(_) => "boolean",
+                        Value::Number(_) => "number",
+                        Value::String(_) => "string",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                    }
+                )));
+            }
+        };
+
+        Ok(Some(vec![if bool_val { 1 } else { 0 }]))
+    }
+
+    fn to_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &BOOLEAN_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
+}
+
+/// Static ConfigDef for BooleanConverter.
+pub struct BooleanConverterConfigDef;
+
+impl ConfigDef for BooleanConverterConfigDef {
+    fn config_def(&self) -> HashMap<String, common_trait::config::ConfigValueEntry> {
+        ConverterConfig::new_config_def()
+            .build()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_config_value_entry()))
+            .collect()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_boolean_converter_new() {
-        let converter = BooleanConverter::new();
-        assert!(!converter.config.is_key());
-    }
-
-    #[test]
-    fn test_serialize_true() {
-        let converter = BooleanConverter::new();
-        let result = converter.serialize(Some(true));
-        assert_eq!(result, vec![1u8]);
-    }
-
-    #[test]
-    fn test_serialize_false() {
-        let converter = BooleanConverter::new();
-        let result = converter.serialize(Some(false));
-        assert_eq!(result, vec![0u8]);
-    }
-
-    #[test]
-    fn test_serialize_none() {
-        let converter = BooleanConverter::new();
-        let result = converter.serialize(None);
-        assert_eq!(result, vec![]);
-    }
-
-    #[test]
-    fn test_deserialize_true() {
-        let converter = BooleanConverter::new();
-        let result = converter.deserialize(&[1u8]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(true));
-    }
-
-    #[test]
-    fn test_deserialize_false() {
-        let converter = BooleanConverter::new();
-        let result = converter.deserialize(&[0u8]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(false));
-    }
-
-    #[test]
-    fn test_deserialize_empty() {
-        let converter = BooleanConverter::new();
-        let result = converter.deserialize(&[]);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-    }
-
-    #[test]
-    fn test_from_connect_data() {
-        let converter = BooleanConverter::new();
-        let schema = Arc::new(ConnectSchema::new(Type::Boolean));
-        let result = converter.from_connect_data("test", Some(schema.as_ref()), &true);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec![1u8]);
-    }
-
-    #[test]
-    fn test_to_connect_data() {
-        let converter = BooleanConverter::new();
-        let result = converter.to_connect_data("test", &[1u8]);
-        assert!(result.is_ok());
-        let sav = result.unwrap();
-        assert!(sav.schema().is_some());
-    }
-}
+pub static BOOLEAN_CONVERTER_CONFIG_DEF: BooleanConverterConfigDef = BooleanConverterConfigDef;

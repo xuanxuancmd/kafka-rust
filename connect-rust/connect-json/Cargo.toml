@@ -1,0 +1,21 @@
+[package]
+name = "connect-json"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "JSON converter for Kafka Connect"
+
+[dependencies]
+connect-api = { path = "../connect-api" }
+common-trait = { path = "../common-trait" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = "0.4"
+base64 = "0.22"
+
+[dev-dependencies]
+
+[lib]
+name = "connect_json"
+path = "src/lib.rs"

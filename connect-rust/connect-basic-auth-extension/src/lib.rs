@@ -1,26 +1,20 @@
-//! Kafka Connect Basic Auth Extension
-//!
-//! This crate provides basic authentication extension for Kafka Connect REST API.
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-pub mod auth;
-pub mod basic_auth_callback_handler;
-pub mod basic_auth_credentials;
-pub mod error;
-pub mod jaas;
-pub mod jaas_basic_auth_filter;
-pub mod property_file_login_module;
-pub mod request_matcher;
-pub mod rest;
+//! Connect basic auth extension module for Kafka Connect.
 
-pub use auth::{BasicAuthConfig, BasicAuthStoredCredentials};
-pub use basic_auth_callback_handler::BasicAuthCallBackHandler;
-pub use basic_auth_credentials::BasicAuthCredentials;
-pub use error::{AuthResult, FilterError, FilterResult, LoginException};
-pub use jaas::{
-    AppConfigurationEntry, Callback, CallbackHandler, ControlFlag, JaasConfiguration, LoginModule,
-    NameCallback, PasswordCallback, Subject,
-};
-pub use jaas_basic_auth_filter::JaasBasicAuthFilter;
-pub use property_file_login_module::PropertyFileLoginModule;
-pub use request_matcher::RequestMatcher;
-pub use rest::{BasicAuthSecurityRestExtension, ConnectRestExtension, ConnectRestExtensionContext};
+pub mod basic_auth_security_provider;
+
+pub use basic_auth_security_provider::*;

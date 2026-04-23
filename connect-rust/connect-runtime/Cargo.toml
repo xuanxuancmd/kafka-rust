@@ -11,11 +11,20 @@ tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-thiserror = "1.0"
 async-trait = "0.1"
-indexmap = "2.0"
 dashmap = "5.0"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+regex = "1.10"
+reqwest = { version = "0.11", features = ["json"] }
+axum = "0.7"
+thiserror = "1.0"
 log = "0.4"
-env_logger = "0.10"
+lazy_static = "1.4"
+# Crypto dependencies for request signing
+base64 = "0.21"
+hmac = "0.12"
+sha2 = "0.10"
+
+[dev-dependencies]
+wiremock = "0.5"
+tempfile = "3.5"
+indexmap = "2.0"
