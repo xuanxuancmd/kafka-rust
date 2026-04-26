@@ -26,7 +26,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -34,7 +34,6 @@ use crate::rest::herder_request_handler::HerderRequestHandler;
 use crate::rest::internal_request_signature::{InternalRequestSignature, Crypto};
 use crate::rest::rest_client::RestClient;
 use crate::rest::rest_request_timeout::RestRequestTimeout;
-use crate::rest::errors::HttpStatus;
 
 /// Query parameters for internal cluster requests.
 #[derive(Debug, Deserialize)]

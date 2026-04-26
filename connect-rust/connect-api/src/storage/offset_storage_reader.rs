@@ -18,7 +18,7 @@ use serde_json::Value;
 /// OffsetStorageReader trait for offset storage reader.
 ///
 /// This corresponds to `org.apache.kafka.connect.storage.OffsetStorageReader` in Java.
-pub trait OffsetStorageReader {
+pub trait OffsetStorageReader: Send + Sync {
     /// Returns the offset for the given partition.
     fn offset(
         &self,

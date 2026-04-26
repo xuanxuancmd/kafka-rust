@@ -16,7 +16,7 @@
 /// PluginMetrics trait for plugin metrics management.
 ///
 /// This corresponds to `org.apache.kafka.common.metrics.PluginMetrics` in Java.
-pub trait PluginMetrics {
+pub trait PluginMetrics: Send + Sync {
     /// Returns the metric group prefix.
     fn metric_group_prefix(&self) -> &str;
 
@@ -27,5 +27,7 @@ pub trait PluginMetrics {
     fn remove_metric(&mut self, name: &str);
 
     /// Returns all metric names.
-    fn metric_names(&self) -> Vec<&str>;
+    ///
+    /// Returns owned strings to avoid lifetime issues with interior mutability.
+    fn metric_names(&self) -> Vec<String>;
 }

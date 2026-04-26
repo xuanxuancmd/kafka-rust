@@ -53,6 +53,23 @@ pub struct ConnectorTaskId {
     pub task: u32,
 }
 
+impl ConnectorTaskId {
+    /// Create a new ConnectorTaskId.
+    pub fn new(connector: String, task: u32) -> Self {
+        ConnectorTaskId { connector, task }
+    }
+
+    /// Get the connector name.
+    pub fn connector(&self) -> &str {
+        &self.connector
+    }
+
+    /// Get the task ID.
+    pub fn task(&self) -> u32 {
+        self.task
+    }
+}
+
 /// Information about a connector.
 #[derive(Debug, Clone)]
 pub struct ConnectorInfo {
@@ -74,16 +91,25 @@ pub struct TaskInfo {
 }
 
 /// State of a connector or task.
+/// Corresponds to org.apache.kafka.connect.runtime.AbstractStatus.State in Java.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectorState {
+    /// Starting state.
+    Starting,
     /// Running state.
     Running,
     /// Paused state.
     Paused,
+    /// Stopped state.
+    Stopped,
     /// Failed state.
     Failed,
-    /// Unassigned/destroyed state.
+    /// Unassigned state.
     Unassigned,
+    /// Destroyed state.
+    Destroyed,
+    /// Restarting state - used during restart planning.
+    Restarting,
 }
 
 /// Target state for a connector.
@@ -330,6 +356,77 @@ impl VersionRange {
     }
 }
 
+/// Config reload action enum.
+///
+/// Specifies what action to take when a connector config is reloaded.
+/// Corresponds to `Herder.ConfigReloadAction` in Java.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigReloadAction {
+    /// No action - just update the config.
+    None,
+    /// Restart the connector after config update.
+    Restart,
+}
+
+/// Restart request for connector and tasks.
+///
+/// Specifies which connector to restart and whether to include tasks.
+/// Corresponds to `org.apache.kafka.connect.runtime.RestartRequest` in Java.
+/// Full implementation resides in connect-runtime/src/runtime/restart_request.rs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartRequest {
+    /// Connector name.
+    pub connector: String,
+    /// Whether to restart only failed instances.
+    pub only_failed: bool,
+    /// Whether to include tasks in the restart.
+    pub include_tasks: bool,
+}
+
+impl RestartRequest {
+    /// Create a new RestartRequest.
+    pub fn new(connector: String, only_failed: bool, include_tasks: bool) -> Self {
+        RestartRequest {
+            connector,
+            only_failed,
+            include_tasks,
+        }
+    }
+
+    /// Get the connector name.
+    pub fn connector(&self) -> &str {
+        &self.connector
+    }
+
+    /// Check if only failed instances should be restarted.
+    pub fn only_failed(&self) -> bool {
+        self.only_failed
+    }
+
+    /// Check if tasks should be included in restart.
+    pub fn include_tasks(&self) -> bool {
+        self.include_tasks
+    }
+}
+
+/// Connect metrics trait for metrics access.
+///
+/// Provides access to Connect metrics for monitoring.
+/// Full implementation resides in common-trait/src/worker/worker.rs.
+pub trait ConnectMetrics: Send + Sync {
+    /// Returns the metrics registry.
+    fn registry(&self) -> &dyn MetricsRegistry;
+
+    /// Stops the metrics.
+    fn stop(&self);
+}
+
+/// Metrics registry trait.
+pub trait MetricsRegistry: Send + Sync {
+    /// Returns the worker group name.
+    fn worker_group_name(&self) -> &str;
+}
+
 /// Herder trait - the primary interface for managing connectors and tasks.
 ///
 /// This trait defines all operations for managing Kafka Connect connectors,
@@ -494,6 +591,20 @@ pub trait Herder {
     /// Resume a paused connector.
     fn resume_connector(&self, connector: &str);
 
+    /// Stop a connector asynchronously with callback.
+    /// Corresponds to `stopConnector(String, Callback<Void>)` in Java.
+    fn stop_connector_async(&self, connector: &str, callback: Box<dyn Callback<()>>);
+
+    // === Connector restart with tasks ===
+
+    /// Restart a connector and optionally its tasks.
+    /// Corresponds to `restartConnectorAndTasks(RestartRequest, Callback<ConnectorStateInfo>)` in Java.
+    fn restart_connector_and_tasks(
+        &self,
+        request: &RestartRequest,
+        callback: Box<dyn Callback<ConnectorStateInfo>>,
+    );
+
     // === Plugin management ===
 
     /// Get the plugins handle.
@@ -529,11 +640,29 @@ pub trait Herder {
         callback: Box<dyn Callback<Message>>,
     );
 
+    /// Reset connector offsets.
+    /// Corresponds to `resetConnectorOffsets(String, Callback<Message>)` in Java.
+    fn reset_connector_offsets(&self, conn_name: &str, callback: Box<dyn Callback<Message>>);
+
     // === Logger management ===
 
     /// Get logger level.
     fn logger_level(&self, logger: &str) -> LoggerLevel;
 
+    /// Get all logger levels.
+    /// Corresponds to `allLoggerLevels()` in Java.
+    fn all_logger_levels(&self) -> HashMap<String, LoggerLevel>;
+
     /// Set worker logger level.
     fn set_worker_logger_level(&self, namespace: &str, level: &str) -> Vec<String>;
+
+    /// Set cluster logger level.
+    /// Corresponds to `setClusterLoggerLevel(String, String)` in Java.
+    fn set_cluster_logger_level(&self, namespace: &str, level: &str);
+
+    // === Metrics access ===
+
+    /// Get the ConnectMetrics from the worker for this herder.
+    /// Corresponds to `connectMetrics()` in Java.
+    fn connect_metrics(&self) -> Box<dyn ConnectMetrics>;
 }

@@ -36,6 +36,10 @@ pub enum ConnectError {
     SchemaProjector { message: String },
     /// AlreadyExistsException for already exists errors.
     AlreadyExists { message: String },
+    /// SerializationException for serialization errors.
+    SerializationError { message: String },
+    /// DeserializationException for deserialization errors.
+    DeserializationError { message: String },
     /// General ConnectException.
     General { message: String },
 }
@@ -107,6 +111,8 @@ impl ConnectError {
             ConnectError::SchemaBuilder { message } => message,
             ConnectError::SchemaProjector { message } => message,
             ConnectError::AlreadyExists { message } => message,
+            ConnectError::SerializationError { message } => message,
+            ConnectError::DeserializationError { message } => message,
             ConnectError::General { message } => message,
         }
     }
@@ -134,6 +140,12 @@ impl fmt::Display for ConnectError {
             }
             ConnectError::AlreadyExists { message } => {
                 write!(f, "AlreadyExistsException: {}", message)
+            }
+            ConnectError::SerializationError { message } => {
+                write!(f, "SerializationException: {}", message)
+            }
+            ConnectError::DeserializationError { message } => {
+                write!(f, "DeserializationException: {}", message)
             }
             ConnectError::General { message } => write!(f, "ConnectException: {}", message),
         }

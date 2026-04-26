@@ -32,29 +32,47 @@
 //! - **SharedTopicAdmin**: Lazy and atomic TopicAdmin holder
 //! - **LoggingContext**: MDC logging context management
 //! - **KafkaBasedLog**: Kafka-backed shared log storage
+//! - **ConvertingFutureCallback**: Future + Callback implementation with conversion
+//! - **FutureCallback**: Simple FutureCallback without conversion
+//! - **TopicCreationGroup**: Topic creation group with regex patterns
+//! - **ConcreteSubClassValidator**: Validator for concrete subclasses
+//! - **InstantiableClassValidator**: Validator for instantiable classes
+//! - **SafeObjectInputStream**: Safe deserialization checker
 
 mod callback;
+mod concrete_sub_class_validator;
 mod connect_utils;
 mod connector_task_id;
+mod converting_future_callback;
+mod future_callback;
+mod instantiable_class_validator;
 mod kafka_based_log;
 mod logging_context;
 mod retry_util;
+mod safe_object_input_stream;
 mod shared_topic_admin;
 mod sink_utils;
 mod stage;
 mod table;
 mod temporary_stage;
 mod topic_admin;
+mod topic_creation_group;
 
 pub use callback::*;
+pub use concrete_sub_class_validator::*;
 pub use connect_utils::*;
 pub use connector_task_id::*;
+pub use converting_future_callback::*;
+pub use future_callback::*;
+pub use instantiable_class_validator::*;
 pub use kafka_based_log::*;
 pub use logging_context::*;
 pub use retry_util::*;
+pub use safe_object_input_stream::*;
 pub use shared_topic_admin::*;
 pub use sink_utils::*;
 pub use stage::*;
 pub use table::*;
 pub use temporary_stage::*;
 pub use topic_admin::*;
+pub use topic_creation_group::*;

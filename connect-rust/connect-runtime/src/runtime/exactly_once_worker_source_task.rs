@@ -27,28 +27,23 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use common_trait::errors::ConnectError;
 use common_trait::util::time::Time;
 use common_trait::worker::{ConnectorTaskId, TargetState};
 use connect_api::connector::ConnectRecord;
-use connect_api::source::ExactlyOnceSupport as ApiExactlyOnceSupport;
 use connect_api::source::{SourceRecord, TransactionBoundary};
 use kafka_clients_mock::{ProducerRecord, RecordMetadata};
 
-use crate::distributed::distributed_config::ExactlyOnceSourceSupport;
-use crate::errors::{
-    ProcessingContext as ErrorProcessingContext, RetryWithToleranceOperator, Stage, ToleranceType,
-};
+use crate::errors::{ProcessingContext as ErrorProcessingContext, RetryWithToleranceOperator};
 use crate::runtime::abstract_worker_source_task::{
     AbstractWorkerSourceTask, AbstractWorkerSourceTaskHooks, KafkaProducer, OffsetStorageWriter,
-    SourceRecordWriteCounter, SourceTaskMetricsGroup, WorkerSourceTaskConfig,
+    WorkerSourceTaskConfig,
 };
-use crate::runtime::submitted_records::{CommittableOffsets, SubmittedRecord, SubmittedRecords};
+use crate::runtime::submitted_records::SubmittedRecord;
 use crate::runtime::WorkerSourceTaskContext;
 use crate::runtime::WorkerTransactionContext;
-use crate::task::{TaskConfig, TaskMetrics, ThreadSafeTaskStatusListener};
+use crate::task::ThreadSafeTaskStatusListener;
 
 /// Configuration key for transaction boundary interval in milliseconds.
 pub const TRANSACTION_BOUNDARY_INTERVAL_MS_CONFIG: &str = "transaction.boundary.interval.ms";
@@ -933,6 +928,7 @@ impl Default for MockTransactionalProducer {
 mod tests {
     use super::*;
     use crate::errors::ErrorHandlingMetrics;
+    use crate::errors::ToleranceType;
     use common_trait::util::time::SystemTimeImpl;
 
     fn create_test_task() -> ExactlyOnceWorkerSourceTask {

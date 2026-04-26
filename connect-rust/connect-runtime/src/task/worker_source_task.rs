@@ -29,7 +29,7 @@ use common_trait::errors::ConnectError;
 use common_trait::worker::{ConnectorTaskId, TargetState};
 use connect_api::connector::ConnectRecord;
 use connect_api::source::SourceRecord;
-use kafka_clients_mock::{MockKafkaProducer, ProducerError, ProducerRecord, RecordMetadata};
+use kafka_clients_mock::{MockKafkaProducer, ProducerRecord, RecordMetadata};
 
 use super::{TaskConfig, TaskMetrics, ThreadSafeTaskStatusListener, WorkerTask};
 

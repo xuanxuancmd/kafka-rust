@@ -16,7 +16,8 @@
 /// ConnectorContext trait for connector context.
 ///
 /// This corresponds to `org.apache.kafka.connect.connector.ConnectorContext` in Java.
-pub trait ConnectorContext {
+/// ConnectorContext implementations must be thread-safe as they are used in multi-threaded environments.
+pub trait ConnectorContext: Send + Sync {
     /// Requests a task reconfiguration.
     fn request_task_reconfiguration(&mut self);
 

@@ -41,7 +41,7 @@ pub struct HerderConnectorContext {
     /// The connector name.
     connector_name: String,
     /// Plugin metrics for this connector.
-    plugin_metrics: Option<Box<dyn PluginMetrics>>,
+    plugin_metrics: Option<Box<dyn PluginMetrics + Send + Sync>>,
     /// Whether this context has been closed.
     closed: bool,
 }
@@ -70,7 +70,7 @@ impl HerderConnectorContext {
     pub fn new(
         herder: Box<dyn HerderCallback>,
         connector_name: String,
-        plugin_metrics: Option<Box<dyn PluginMetrics>>,
+        plugin_metrics: Option<Box<dyn PluginMetrics + Send + Sync>>,
     ) -> Self {
         HerderConnectorContext {
             herder: Some(herder),
@@ -107,7 +107,7 @@ impl HerderConnectorContext {
     /// context has been closed.
     ///
     /// Corresponds to Java: `public PluginMetrics pluginMetrics()`
-    pub fn plugin_metrics(&self) -> Option<&dyn PluginMetrics> {
+    pub fn plugin_metrics(&self) -> Option<&(dyn PluginMetrics + Send + Sync)> {
         if self.closed {
             return None;
         }

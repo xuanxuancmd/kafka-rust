@@ -23,7 +23,7 @@
 //! Corresponds to Java: org.apache.kafka.connect.runtime.ConnectorConfig
 
 use common_trait::config::{
-    ConfigDefBuilder, ConfigDefImportance, ConfigDefType, ConfigDefWidth, NonEmptyStringValidator,
+    ConfigDefBuilder, ConfigDefImportance, ConfigDefType, NonEmptyStringValidator,
     RangeValidator,
 };
 use common_trait::errors::ConfigException;

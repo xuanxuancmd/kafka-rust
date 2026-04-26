@@ -28,7 +28,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 /// Key name constants for protocol serialization (V0)
 pub const VERSION_KEY_NAME: &str = "version";
@@ -393,6 +392,22 @@ impl fmt::Display for Assignment {
 pub struct ConnectProtocol;
 
 impl ConnectProtocol {
+    /// Returns the collection of Connect protocols that are supported by this version
+    /// along with their serialized metadata. The V0 protocol only supports EAGER mode.
+    ///
+    /// # Arguments
+    /// * `worker_state` - The current state of the worker metadata
+    ///
+    /// # Returns
+    /// A vector containing a single tuple (protocol_name, metadata_bytes) for EAGER mode
+    pub fn metadata_request(worker_state: &WorkerState) -> Vec<(String, Vec<u8>)> {
+        let metadata = Self::serialize_metadata(worker_state);
+        vec![(
+            ConnectProtocolCompatibility::Eager.protocol().to_string(),
+            metadata,
+        )]
+    }
+
     /// Serializes worker state metadata to a byte buffer.
     ///
     /// Protocol V0 format:

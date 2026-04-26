@@ -31,6 +31,18 @@ pub trait ConfigDef {
     fn config_def(&self) -> std::collections::HashMap<String, ConfigValueEntry>;
 }
 
+/// An empty ConfigDef implementation with no configurations.
+///
+/// This is useful for connectors or plugins that don't require any configuration.
+/// Corresponds to returning an empty ConfigDef in Java.
+pub struct EmptyConfigDef;
+
+impl ConfigDef for EmptyConfigDef {
+    fn config_def(&self) -> std::collections::HashMap<String, ConfigValueEntry> {
+        std::collections::HashMap::new()
+    }
+}
+
 /// ConfigValueEntry represents a configuration value entry in ConfigDef.
 ///
 /// This is a simplified version of ConfigKeyDef for backward compatibility.
@@ -276,6 +288,18 @@ impl ConfigKeyDef {
     /// Returns whether this is an internal configuration.
     pub fn internal_config(&self) -> bool {
         self.internal_config
+    }
+
+    /// Converts this ConfigKeyDef to a ConfigValueEntry.
+    pub fn to_config_value_entry(&self) -> ConfigValueEntry {
+        ConfigValueEntry::new(
+            self.name.clone(),
+            self.config_type,
+            self.default_value.clone(),
+            self.importance,
+            self.width,
+            self.doc.clone(),
+        )
     }
 
     /// Sets the validator for this configuration.

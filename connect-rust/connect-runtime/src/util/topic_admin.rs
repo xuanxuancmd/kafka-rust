@@ -19,7 +19,7 @@
 
 use common_trait::util::time::Time;
 use common_trait::TopicPartition;
-use kafka_clients_mock::{MockAdmin, NewTopic, OffsetSpec, TopicMetadata};
+use kafka_clients_mock::{MockAdmin, NewTopic, TopicMetadata};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;

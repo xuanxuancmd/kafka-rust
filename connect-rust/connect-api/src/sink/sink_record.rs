@@ -65,6 +65,37 @@ impl SinkRecord {
         }
     }
 
+    /// Creates a new SinkRecord with original topic/partition/offset for tracking.
+    pub fn new_with_original(
+        topic: impl Into<String>,
+        kafka_partition: Option<i32>,
+        key: Option<Value>,
+        value: Value,
+        kafka_offset: i64,
+        timestamp: Option<i64>,
+        timestamp_type: TimestampType,
+        headers: ConnectHeaders,
+        original_topic: &str,
+        original_kafka_partition: i32,
+        original_kafka_offset: i64,
+    ) -> Self {
+        SinkRecord {
+            topic: topic.into(),
+            kafka_partition,
+            key,
+            key_schema: None,
+            value,
+            value_schema: None,
+            timestamp,
+            timestamp_type,
+            headers,
+            kafka_offset,
+            original_topic: Some(original_topic.to_string()),
+            original_kafka_partition: Some(original_kafka_partition),
+            original_kafka_offset: Some(original_kafka_offset),
+        }
+    }
+
     /// Returns the Kafka offset.
     pub fn kafka_offset(&self) -> i64 {
         self.kafka_offset

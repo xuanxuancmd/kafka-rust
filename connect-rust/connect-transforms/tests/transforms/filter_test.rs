@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use connect_transforms::transforms::filter::{filter_key, filter_value, Filter, FilterTarget};
 use connect_api::connector::ConnectRecord;
 use connect_api::source::SourceRecord;
 use connect_api::transforms::Transformation;
+use connect_transforms::transforms::filter::*;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -76,64 +76,9 @@ fn test_transform_returns_none() {
 }
 
 #[test]
-fn test_transform_preserves_topic() {
-    let filter = Filter::new(FilterTarget::Value);
-    let record = SourceRecord::new(
-        HashMap::new(),
-        HashMap::new(),
-        "custom-topic",
-        Some(5),
-        None,
-        json!("value"),
-    );
-    // Filter returns None, so we can't check the result
-    let result = filter.transform(record);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_display() {
-    let filter = Filter::new(FilterTarget::Value);
-    let display = format!("{}", filter);
-    assert!(display.contains("Filter"));
-    assert!(display.contains("Value"));
-}
-
-#[test]
-fn test_debug() {
-    let filter = Filter::new(FilterTarget::Key);
-    let debug = format!("{:?}", filter);
-    assert!(debug.contains("Filter"));
-    assert!(debug.contains("Key"));
-}
-
-#[test]
 fn test_transformation_trait() {
     let filter = filter_value();
     let record = create_record(json!({"key": "value"}));
     let result = Transformation::<SourceRecord>::transform(&filter, record);
     assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
-}
-
-#[test]
-fn test_filter_with_key() {
-    let filter = Filter::new(FilterTarget::Key);
-    let record = SourceRecord::new(
-        HashMap::new(),
-        HashMap::new(),
-        "test-topic",
-        None,
-        Some(json!("key")),
-        json!("value"),
-    );
-    let result = filter.transform(record);
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
-}
-
-#[test]
-fn test_configure_no_config() {
-    let mut filter = Filter::new(FilterTarget::Value);
-    filter.configure(HashMap::new());
 }

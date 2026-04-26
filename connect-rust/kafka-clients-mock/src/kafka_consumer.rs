@@ -23,6 +23,7 @@
 
 use common_trait::TopicPartition;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -124,6 +125,10 @@ impl InternalConsumerState {
 /// This corresponds to `org.apache.kafka.clients.consumer.KafkaConsumer` in Java.
 pub struct MockKafkaConsumer {
     state: Arc<Mutex<InternalConsumerState>>,
+    /// Wakeup flag for interrupting blocking operations.
+    /// This corresponds to `KafkaConsumer.wakeup()` in Java.
+    /// Thread-safe: can be set from any thread to interrupt poll().
+    wakeup_flag: AtomicBool,
 }
 
 impl MockKafkaConsumer {
@@ -131,6 +136,7 @@ impl MockKafkaConsumer {
     pub fn new() -> Self {
         MockKafkaConsumer {
             state: Arc::new(Mutex::new(InternalConsumerState::new())),
+            wakeup_flag: AtomicBool::new(false),
         }
     }
 
@@ -159,6 +165,44 @@ impl MockKafkaConsumer {
             // Initialize partition 0 by default (can be expanded via add_records)
             let tp = TopicPartition::new(&topic, 0);
             state.partition_positions.insert(tp.clone(), 0);
+            state.record_queues.insert(tp, VecDeque::new());
+        }
+    }
+
+    /// Manually assigns a list of partitions to this consumer.
+    ///
+    /// This corresponds to `KafkaConsumer.assign(Collection<TopicPartition>)` in Java.
+    /// Manually assigns a specific list of partitions to the consumer.
+    /// This method replaces any existing assignment and does not use the consumer's
+    /// group management features, meaning no rebalances are triggered on metadata changes.
+    /// It is incompatible with group assignment via `subscribe`.
+    /// An empty list effectively acts as an unsubscribe.
+    ///
+    /// # Arguments
+    /// * `partitions` - The partitions to assign
+    ///
+    /// # Behavior
+    /// - Replaces any existing subscription/assignment
+    /// - Clears subscribed_topics (since assign doesn't use group management)
+    /// - Initializes partition positions to 0 for all assigned partitions
+    /// - Creates empty record queues for each assigned partition
+    pub fn assign(&self, partitions: Vec<TopicPartition>) {
+        let mut state = self.state.lock().unwrap();
+
+        // Clear existing subscription/assignment
+        // Unlike subscribe, assign doesn't use subscribed_topics for group management,
+        // but we still track the topic names for consistency
+        state.subscribed_topics.clear();
+        state.partition_positions.clear();
+        state.record_queues.clear();
+
+        // Assign specific partitions
+        for tp in partitions {
+            // Track topic name (for compatibility with existing poll logic)
+            state.subscribed_topics.insert(tp.topic().to_string());
+            // Initialize partition position
+            state.partition_positions.insert(tp.clone(), 0);
+            // Initialize record queue
             state.record_queues.insert(tp, VecDeque::new());
         }
     }
@@ -436,6 +480,37 @@ impl MockKafkaConsumer {
     pub fn committed(&self, partition: &TopicPartition) -> Option<OffsetAndMetadata> {
         let state = self.state.lock().unwrap();
         state.committed_offsets.get(partition).cloned()
+    }
+
+    /// Wakes up the consumer.
+    ///
+    /// This corresponds to `KafkaConsumer.wakeup()` in Java.
+    /// Thread-safe method used to interrupt a blocking consumer operation,
+    /// such as a long poll. It triggers a WakeupException in the thread
+    /// currently performing the blocking call.
+    ///
+    /// # Behavior
+    /// - Sets a wakeup flag that can be checked by blocking operations
+    /// - Thread-safe: can be called from any thread
+    /// - In mock implementation, poll() does not block, so this primarily
+    ///   serves as a flag for testing purposes
+    pub fn wakeup(&self) {
+        self.wakeup_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Clears the wakeup flag.
+    ///
+    /// This is typically called after handling a wakeup to allow subsequent
+    /// operations to proceed normally.
+    pub fn clear_wakeup(&self) {
+        self.wakeup_flag.store(false, Ordering::SeqCst);
+    }
+
+    /// Checks if wakeup has been triggered.
+    ///
+    /// Returns true if wakeup() was called since the last clear_wakeup().
+    pub fn is_wakeup(&self) -> bool {
+        self.wakeup_flag.load(Ordering::SeqCst)
     }
 
     // ===== Utility methods for testing =====
@@ -881,5 +956,84 @@ mod tests {
         let committed = consumer.committed(&tp).unwrap();
         assert_eq!(committed.offset(), 100);
         assert_eq!(committed.metadata(), "test-metadata");
+    }
+
+    #[test]
+    fn test_assign() {
+        let consumer = MockKafkaConsumer::new();
+        let tp0 = TopicPartition::new("topic1", 0);
+        let tp1 = TopicPartition::new("topic1", 1);
+
+        consumer.assign(vec![tp0.clone(), tp1.clone()]);
+
+        // Check topic is tracked
+        let subscription = consumer.subscription();
+        assert!(subscription.contains("topic1"));
+        assert!(consumer.is_subscribed());
+
+        // Check partitions are initialized with position 0
+        assert_eq!(consumer.position(&tp0).unwrap(), 0);
+        assert_eq!(consumer.position(&tp1).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_assign_replaces_subscribe() {
+        let consumer = MockKafkaConsumer::new();
+        consumer.subscribe(vec!["topic2".to_string()]);
+
+        let tp0 = TopicPartition::new("topic1", 0);
+        consumer.assign(vec![tp0.clone()]);
+
+        // Previous subscription should be replaced
+        let subscription = consumer.subscription();
+        assert!(!subscription.contains("topic2"));
+        assert!(subscription.contains("topic1"));
+    }
+
+    #[test]
+    fn test_assign_empty_unsubscribes() {
+        let consumer = MockKafkaConsumer::new();
+        consumer.subscribe(vec!["topic1".to_string()]);
+
+        // Empty assignment acts as unsubscribe
+        consumer.assign(vec![]);
+
+        assert!(!consumer.is_subscribed());
+        assert!(consumer.subscription().is_empty());
+    }
+
+    #[test]
+    fn test_wakeup() {
+        let consumer = MockKafkaConsumer::new();
+
+        // Initially not woken up
+        assert!(!consumer.is_wakeup());
+
+        // Call wakeup
+        consumer.wakeup();
+        assert!(consumer.is_wakeup());
+
+        // Clear wakeup
+        consumer.clear_wakeup();
+        assert!(!consumer.is_wakeup());
+    }
+
+    #[test]
+    fn test_wakeup_thread_safe() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let consumer = Arc::new(MockKafkaConsumer::new());
+        let consumer_clone = Arc::clone(&consumer);
+
+        // Spawn thread that calls wakeup
+        let handle = thread::spawn(move || {
+            consumer_clone.wakeup();
+        });
+
+        handle.join().unwrap();
+
+        // Should be woken up from another thread
+        assert!(consumer.is_wakeup());
     }
 }

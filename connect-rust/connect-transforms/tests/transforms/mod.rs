@@ -18,4 +18,17 @@ mod drop_headers_test;
 mod extract_field_test;
 mod filter_test;
 mod flatten_test;
+mod hoist_field_test;
+mod insert_field_test;
+mod insert_header_test;
+mod mask_field_test;
+mod regex_router_test;
+mod replace_field_test;
+mod set_schema_metadata_test;
 mod timestamp_converter_test;
+mod timestamp_router_test;
+mod value_to_key_test;
+
+mod field;
+mod predicates;
+mod util;

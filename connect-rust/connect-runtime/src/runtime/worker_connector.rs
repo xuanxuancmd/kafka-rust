@@ -33,7 +33,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use connect_api::components::Versioned;
-use connect_api::connector::ConnectorContext;
 use connect_api::errors::ConnectError;
 
 use super::closeable_connector_context::CloseableConnectorContext;
@@ -797,6 +796,7 @@ mod tests {
     use super::*;
     use common_trait::config::{Config, ConfigDef, ConfigValueEntry};
     use common_trait::util::time::SYSTEM;
+    use connect_api::connector::ConnectorContext;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     /// Mock connector for testing.
@@ -804,6 +804,7 @@ mod tests {
         started: AtomicBool,
         stopped: AtomicBool,
         version_str: String,
+        context: Option<Box<dyn ConnectorContext>>,
     }
 
     impl MockConnector {
@@ -812,6 +813,7 @@ mod tests {
                 started: AtomicBool::new(false),
                 stopped: AtomicBool::new(false),
                 version_str: "1.0.0".to_string(),
+                context: None,
             }
         }
     }
@@ -824,20 +826,22 @@ mod tests {
 
     impl connect_api::connector::Connector for MockConnector {
         fn context(&self) -> &dyn ConnectorContext {
-            // Placeholder - tests use mock context
-            unimplemented!("mock connector context")
+            self.context
+                .as_ref()
+                .expect("context not initialized")
+                .as_ref()
         }
 
-        fn initialize(&mut self, _context: Box<dyn ConnectorContext>) {
-            // Mock initialization
+        fn initialize(&mut self, context: Box<dyn ConnectorContext>) {
+            self.context = Some(context);
         }
 
         fn initialize_with_task_configs(
             &mut self,
-            _context: Box<dyn ConnectorContext>,
+            context: Box<dyn ConnectorContext>,
             _task_configs: Vec<HashMap<String, String>>,
         ) {
-            // Mock initialization with task configs
+            self.context = Some(context);
         }
 
         fn start(&mut self, _props: HashMap<String, String>) {

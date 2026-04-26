@@ -19,8 +19,7 @@
 //! Provides a shared, compacted log of records stored in Kafka that all clients
 //! need to consume and agree on their offset.
 
-use super::callback::Callback;
-use super::topic_admin::{TopicAdmin, TopicAdminError};
+use super::topic_admin::TopicAdmin;
 use common_trait::util::time::Time;
 use common_trait::TopicPartition;
 use std::collections::{HashMap, HashSet};

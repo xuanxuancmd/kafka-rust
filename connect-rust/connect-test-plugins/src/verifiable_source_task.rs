@@ -58,7 +58,7 @@ impl Task for VerifiableSourceTask {
 }
 
 impl SourceTask for VerifiableSourceTask {
-    fn initialize(&mut self, _: impl SourceTaskContext) {}
+    fn initialize(&mut self, _: Box<dyn SourceTaskContext>) {}
     fn poll(&mut self) -> Result<Vec<SourceRecord>, ConnectError> {
         let topic = self.topic.clone().unwrap_or_else(|| "test".to_string());
         let mut sp = HashMap::new();

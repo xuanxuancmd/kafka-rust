@@ -22,7 +22,7 @@
 //!
 //! Corresponds to Java: org.apache.kafka.connect.runtime.WorkerConfig
 
-use common_trait::config::{ConfigDefBuilder, ConfigDefImportance, ConfigDefType, ConfigDefWidth};
+use common_trait::config::{ConfigDefBuilder, ConfigDefImportance, ConfigDefType};
 use common_trait::errors::ConfigException;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -605,6 +605,20 @@ impl WorkerConfig {
                 Some((k.clone(), s))
             })
             .collect()
+    }
+
+    /// Returns the Kafka cluster ID from configuration.
+    ///
+    /// This is a simplified version that reads the cluster ID from the configuration
+    /// property "cluster.id" instead of dynamically querying the Kafka cluster.
+    ///
+    /// In the Java implementation, this method dynamically fetches the cluster ID
+    /// by creating an Admin client and calling describeCluster().clusterId().
+    /// For simplicity in the Rust port, we read it from configuration.
+    ///
+    /// Corresponds to Java: WorkerConfig.kafkaClusterId()
+    pub fn kafka_cluster_id(&self) -> Option<String> {
+        self.get_string("cluster.id").map(|s| s.to_string())
     }
 }
 

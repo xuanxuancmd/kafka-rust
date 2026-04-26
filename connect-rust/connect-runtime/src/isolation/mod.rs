@@ -41,3 +41,4 @@ pub mod versioned_plugin_loading_exception;
 // Re-export key types for convenience
 pub use plugin_desc::{PluginDesc, UNDEFINED_VERSION};
 pub use plugin_type::PluginType;
+pub use test_plugins::{TestPackage, TestPlugin};

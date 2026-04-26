@@ -61,7 +61,7 @@ impl Task for MockSourceTask {
 }
 
 impl SourceTask for MockSourceTask {
-    fn initialize(&mut self, _: impl SourceTaskContext) {}
+    fn initialize(&mut self, _: Box<dyn SourceTaskContext>) {}
     fn poll(&mut self) -> Result<Vec<SourceRecord>, ConnectError> {
         if Some(TASK_FAILURE.to_string()) == self.mock_mode {
             let now = std::time::SystemTime::now()

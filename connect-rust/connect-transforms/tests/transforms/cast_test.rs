@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use connect_api::connector::ConnectRecord;
-use connect_api::connector::ConnectRecord;
+use connect_api::data::SchemaType;
 use connect_api::source::SourceRecord;
 use connect_api::transforms::Transformation;
 use connect_transforms::transforms::cast::*;

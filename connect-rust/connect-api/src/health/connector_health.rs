@@ -49,8 +49,8 @@ impl ConnectorHealth {
         self.connector_type
     }
 
-    pub fn connector_state(&self) -> ConnectorState {
-        self.connector_state
+    pub fn connector_state(&self) -> &ConnectorState {
+        &self.connector_state
     }
 
     pub fn tasks(&self) -> &std::collections::HashMap<i32, TaskState> {

@@ -19,7 +19,7 @@
 //!
 //! Generates HTML documentation for transformations registered in the Connect runtime.
 
-use crate::tools::predicate_doc::{config_def_to_html, format_default_value};
+use crate::tools::predicate_doc::config_def_to_html;
 use common_trait::config::ConfigKeyDef;
 use std::collections::HashMap;
 
@@ -211,7 +211,7 @@ impl TransformationDocRegistry {
     /// This registers the standard Kafka Connect transformations.
     /// In Java, these are hardcoded in `TransformationDoc.TRANSFORMATIONS`.
     pub fn with_builtin_transformations() -> Self {
-        let mut registry = Self::new();
+        let registry = Self::new();
 
         // Register all built-in transformations
         // Note: The actual transformation classes in connect-transforms crate

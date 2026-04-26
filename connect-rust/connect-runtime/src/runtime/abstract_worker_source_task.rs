@@ -38,7 +38,7 @@ use connect_api::source::SourceRecord;
 use kafka_clients_mock::{ProducerRecord, RecordMetadata};
 
 use crate::errors::{
-    ProcessingContext as ErrorProcessingContext, RetryWithToleranceOperator, Stage, ToleranceType,
+    ProcessingContext as ErrorProcessingContext, RetryWithToleranceOperator, ToleranceType,
 };
 use crate::runtime::submitted_records::{SubmittedRecord, SubmittedRecords};
 use crate::runtime::WorkerSourceTaskContext;
@@ -1540,7 +1540,7 @@ impl AbstractWorkerSourceTask {
     /// Await stop requested with timeout.
     fn await_stop_requested(&self, timeout_ms: u64) -> Result<(), ConnectError> {
         let (lock, cvar) = &self.stop_requested_latch;
-        let mut stop_requested = lock.lock().unwrap();
+        let stop_requested = lock.lock().unwrap();
         let result =
             cvar.wait_timeout_while(stop_requested, Duration::from_millis(timeout_ms), |s| !*s);
         match result {

@@ -35,7 +35,10 @@ use tokio::sync::RwLock;
 use log::{debug, error, info, trace, warn};
 
 use super::applied_connector_config::AppliedConnectorConfig;
-use super::kafka_topic_based_backing_store::{KafkaBasedLog, SendCompletionCallback, TopicAdmin, TopicDescription};
+use super::kafka_topic_based_backing_store::{
+    KafkaBasedLog, TopicAdmin, TopicDescription,
+    TopicBasedStore,
+};
 use super::privileged_write_exception::PrivilegedWriteException;
 
 /// Configuration key for config storage topic.
@@ -109,6 +112,31 @@ pub fn logger_cluster_key(namespace: &str) -> String {
     format!("{}{}", LOGGER_CLUSTER_PREFIX, namespace)
 }
 
+/// Default value for only_failed field in restart request.
+pub const ONLY_FAILED_DEFAULT: bool = false;
+
+/// Default value for include_tasks field in restart request.
+pub const INCLUDE_TASKS_DEFAULT: bool = false;
+
+/// Field name for only_failed in restart request.
+pub const ONLY_FAILED_FIELD_NAME: &str = "only-failed";
+
+/// Field name for include_tasks in restart request.
+pub const INCLUDE_TASKS_FIELD_NAME: &str = "include-tasks";
+
+/// Producer key-value pair for batch writes.
+#[derive(Debug, Clone)]
+pub struct ProducerKeyValue {
+    pub key: String,
+    pub value: Option<Vec<u8>>,
+}
+
+impl ProducerKeyValue {
+    pub fn new(key: String, value: Option<Vec<u8>>) -> Self {
+        Self { key, value }
+    }
+}
+
 /// Provides persistent storage of Kafka Connect connector configurations in a Kafka topic.
 ///
 /// This configuration is expected to be stored in a *single partition* and *compacted* topic.
@@ -159,6 +187,12 @@ pub struct KafkaConfigBackingStore {
     time: Arc<dyn Time>,
     /// Topic admin for managing topics
     topic_admin: Option<Arc<dyn TopicAdmin>>,
+    /// Base producer properties
+    base_producer_props: HashMap<String, String>,
+    /// Fencable producer properties
+    fencable_producer_props: HashMap<String, String>,
+    /// Client ID for this backing store
+    client_id: String,
 }
 
 impl KafkaConfigBackingStore {
@@ -185,6 +219,9 @@ impl KafkaConfigBackingStore {
             uses_fencable_writer: false,
             time,
             topic_admin: None,
+            base_producer_props: HashMap::new(),
+            fencable_producer_props: HashMap::new(),
+            client_id: "connect-configs".to_string(),
         }
     }
 
@@ -211,6 +248,9 @@ impl KafkaConfigBackingStore {
             uses_fencable_writer: false,
             time,
             topic_admin: Some(topic_admin),
+            base_producer_props: HashMap::new(),
+            fencable_producer_props: HashMap::new(),
+            client_id: "connect-configs".to_string(),
         }
     }
 
@@ -473,6 +513,279 @@ impl KafkaConfigBackingStore {
         } else {
             warn!("Discarding config update record with invalid key: {}", key);
         }
+    }
+
+    /// P3-1: Callback for processing consumed records from the config topic.
+    /// This is the unified routing method that handles all record types.
+    pub fn on_completion(
+        &self,
+        error: Option<Box<dyn std::error::Error + Send + Sync>>,
+        record: Option<(String, Vec<u8>, i64, i32)>,
+    ) {
+        if let Some(err) = error {
+            error!("Unexpected error in consumer callback for KafkaConfigBackingStore: {}", err);
+            return;
+        }
+
+        if let Some((key, value, record_offset, _partition)) = record {
+            // Update offset to next record position
+            let mut offset = self.offset.blocking_write();
+            *offset = record_offset + 1;
+
+            self.process_record(&key, Some(&value));
+        } else {
+            // Tombstone record (null value)
+            if let Some((key, _, record_offset, _partition)) = record {
+                let mut offset = self.offset.blocking_write();
+                *offset = record_offset + 1;
+                self.process_record(&key, None);
+            }
+        }
+    }
+
+    /// P3-2: Sets up and creates the KafkaBasedLog for the config topic.
+    /// This creates the topic/admin/producer/consumer wiring.
+    pub fn setup_and_create_kafka_based_log(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Build producer props from base props
+        let producer_props: HashMap<String, String> = self.base_producer_props.clone();
+
+        // Build consumer props (simplified)
+        let consumer_props: HashMap<String, String> = HashMap::new();
+
+        // Build topic description
+        let topic_description = TopicDescription::new(self.topic.clone())
+            .partitions(1)
+            .compacted()
+            .build();
+
+        // Note: In full implementation, this would create the actual KafkaBasedLog
+        // using createKafkaBasedLog(topic, producerProps, consumerProps, callback, topicDescription, topicAdminSupplier, config, time)
+        info!("Setting up KafkaBasedLog for config topic: {}", self.topic);
+
+        Ok(())
+    }
+
+    /// P3-3a: Creates base producer properties from worker config.
+    /// Corresponds to Java: baseProducerProps(WorkerConfig)
+    pub fn base_producer_props(&self) -> HashMap<String, String> {
+        let mut props = HashMap::new();
+        // Default producer settings
+        props.insert("key.serializer".to_string(), "org.apache.kafka.common.serialization.StringSerializer".to_string());
+        props.insert("value.serializer".to_string(), "org.apache.kafka.common.serialization.ByteArraySerializer".to_string());
+        props.insert("delivery.timeout.ms".to_string(), i32::MAX.to_string());
+        props.insert("enable.idempotence".to_string(), "false".to_string());
+        props.insert("client.id".to_string(), self.client_id.clone());
+        props
+    }
+
+    /// P3-3b: Creates fencable producer properties.
+    /// Corresponds to Java: fencableProducerProps(DistributedConfig)
+    pub fn fencable_producer_props(&self) -> HashMap<String, String> {
+        let mut result = self.base_producer_props();
+        
+        // Leader-specific client ID
+        result.insert("client.id".to_string(), format!("{}-leader", self.client_id));
+        
+        // Always require producer acks to all for durable writes
+        result.insert("acks".to_string(), "all".to_string());
+        
+        // Higher max in-flight requests for idempotent producer
+        result.insert("max.in.flight.requests.per.connection".to_string(), "5".to_string());
+        
+        // Enable idempotence for fencable writer
+        result.insert("enable.idempotence".to_string(), "true".to_string());
+        
+        // Transactional ID for exactly-once support
+        result.insert("transactional.id".to_string(), format!("connect-config-{}", self.client_id));
+        
+        result
+    }
+
+    /// P3-3c: Creates a fencable producer for transactional writes.
+    /// Corresponds to Java: createFencableProducer()
+    /// Note: In full implementation, this would create an actual KafkaProducer.
+    pub fn create_fencable_producer(&self) -> bool {
+        if !self.uses_fencable_writer {
+            debug!("Not using fencable writer, no producer needed");
+            return false;
+        }
+        debug!("Creating fencable producer for config topic");
+        // In full implementation: return new KafkaProducer<>(fencableProducerProps)
+        true
+    }
+
+    /// P3-3d: Relinquishes write privileges by closing the fencable producer.
+    /// Corresponds to Java: relinquishWritePrivileges()
+    pub fn relinquish_write_privileges(&mut self) {
+        debug!("Relinquishing write privileges for config topic");
+        // In full implementation, this would close the fencable producer:
+        // if (fencableProducer != null) {
+        //     Utils.closeQuietly(() -> fencableProducer.close(Duration.ZERO), "fencable producer");
+        //     fencableProducer = null;
+        // }
+    }
+
+    /// P3-4a: Given task configurations, get a set of integer task IDs for the connector.
+    /// Corresponds to Java: taskIds(String connector, Map<ConnectorTaskId, Map<String, String>> configs)
+    pub fn task_ids(&self, connector: &str, configs: Option<&HashMap<ConnectorTaskId, HashMap<String, String>>>) -> std::collections::HashSet<u32> {
+        let mut tasks = std::collections::HashSet::new();
+        if let Some(configs_map) = configs {
+            for task_id in configs_map.keys() {
+                if task_id.connector() == connector {
+                    tasks.insert(task_id.task());
+                }
+            }
+        }
+        tasks
+    }
+
+    /// P3-4b: Validates that the task ID set is complete for the expected task count.
+    /// Corresponds to Java: completeTaskIdSet(Set<Integer> idSet, int expectedSize)
+    /// 
+    /// Note: We do NOT check for the exact set due to compaction implications.
+    /// If a connector had 2 tasks, then reduced to 1, compaction might leave
+    /// extra task configs. We validate that all expected configs are present.
+    pub fn complete_task_id_set(id_set: &std::collections::HashSet<u32>, expected_size: u32) -> bool {
+        if id_set.len() < expected_size as usize {
+            return false;
+        }
+
+        for i in 0..expected_size {
+            if !id_set.contains(&i) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// P3-5a: Processes connector removal - reusable deletion logic.
+    /// Corresponds to Java: processConnectorRemoval(String connectorName)
+    pub fn process_connector_removal(&self, connector: &str) {
+        self.connector_configs.remove(connector);
+        self.connector_task_counts.remove(connector);
+        
+        // Remove all task configs for this connector
+        self.task_configs.retain(|k, _| k.connector() != connector);
+        
+        self.deferred_task_updates.remove(connector);
+        self.applied_connector_configs.remove(connector);
+        
+        info!("Successfully processed removal of connector '{}'", connector);
+    }
+
+    /// P3-5b: Parses a restart request from a consumed record with error tolerance.
+    /// Corresponds to Java: recordToRestartRequest(ConsumerRecord, SchemaAndValue)
+    pub fn record_to_restart_request(
+        &self,
+        key: &str,
+        value: Option<&[u8]>,
+    ) -> Option<RestartRequest> {
+        let connector_name = key[RESTART_PREFIX.len()..].to_string();
+        
+        if let Some(data) = value {
+            // Try to parse as JSON map
+            if let Ok(value_map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(data) {
+                // Parse only_failed field with default fallback
+                let only_failed = value_map.get(ONLY_FAILED_FIELD_NAME)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(ONLY_FAILED_DEFAULT);
+                
+                // Parse include_tasks field with default fallback
+                let include_tasks = value_map.get(INCLUDE_TASKS_FIELD_NAME)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(INCLUDE_TASKS_DEFAULT);
+                
+                return Some(RestartRequest::new(connector_name, only_failed, include_tasks));
+            } else {
+                warn!(
+                    "Invalid data for restart request '{}' field should be a Map, defaulting to false/false",
+                    connector_name
+                );
+                return Some(RestartRequest::new(connector_name, ONLY_FAILED_DEFAULT, INCLUDE_TASKS_DEFAULT));
+            }
+        }
+        
+        None
+    }
+
+    /// P3-5c: Processes a logger level record from the config topic.
+    /// Corresponds to Java: processLoggerLevelRecord(String namespace, SchemaAndValue value)
+    pub fn process_logger_level_record(&self, namespace: &str, value: Option<&[u8]>) {
+        if value.is_none() {
+            error!("Ignoring logging level for namespace {} because it is unexpectedly null", namespace);
+            return;
+        }
+
+        if let Some(data) = value {
+            if let Ok(value_map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(data) {
+                if let Some(level) = value_map.get("level").and_then(|v| v.as_str()) {
+                    let started = *self.started.blocking_read();
+                    if started {
+                        if let Some(listener) = &self.update_listener {
+                            listener.on_logging_level_update(namespace, level);
+                        }
+                    } else {
+                        trace!(
+                            "Ignoring old logging level {} for namespace {} that was written before startup",
+                            level,
+                            namespace
+                        );
+                    }
+                } else {
+                    error!(
+                        "Invalid data for logging level key 'level' field with namespace {}; should be a String",
+                        namespace
+                    );
+                }
+            } else {
+                error!(
+                    "Ignoring logging level for namespace {} because the value is not a Map",
+                    namespace
+                );
+            }
+        }
+    }
+
+    /// P3-5d: Returns the topic configuration key.
+    /// Corresponds to Java: getTopicConfig()
+    pub fn get_topic_config(&self) -> &str {
+        CONFIG_TOPIC_CONFIG
+    }
+
+    /// P3-5e: Returns the topic purpose description.
+    /// Corresponds to Java: getTopicPurpose()
+    pub fn get_topic_purpose(&self) -> &str {
+        "connector configurations"
+    }
+
+    /// P3-5f: Sets the config log for testing purposes.
+    /// Corresponds to Java: setConfigLog(KafkaBasedLog)
+    pub fn set_config_log(&mut self, config_log: Arc<dyn KafkaBasedLog<String, Vec<u8>>>) {
+        self.config_log = Some(config_log);
+    }
+
+    /// Converts an integer value extracted from schemaless struct to an int.
+    /// Handles potentially different encodings by different Converters.
+    pub fn int_value(value: &serde_json::Value) -> Result<i32, String> {
+        if let Some(n) = value.as_i64() {
+            Ok(n as i32)
+        } else if let Some(n) = value.as_u64() {
+            Ok(n as i32)
+        } else if let Some(n) = value.as_f64() {
+            Ok(n as i32)
+        } else {
+            Err("Expected integer value to be a number".to_string())
+        }
+    }
+}
+
+impl TopicBasedStore for KafkaConfigBackingStore {
+    fn get_topic_config(&self) -> &str {
+        CONFIG_TOPIC_CONFIG
+    }
+
+    fn get_topic_purpose(&self) -> &str {
+        "connector configurations"
     }
 }
 

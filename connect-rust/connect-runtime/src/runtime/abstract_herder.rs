@@ -29,25 +29,30 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+// Import herder types directly from herder module
 use common_trait::herder::{
-    ActiveTopicsInfo, Callback, ConfigInfo, ConfigInfos, ConfigKeyInfo, ConnectorInfo,
-    ConnectorOffsets, ConnectorState, ConnectorStateInfo, ConnectorTaskId as HerderConnectorTaskId,
-    Created, HerderRequest, InternalRequestSignature, LoggerLevel, Message, PluginDesc, PluginType,
-    Plugins, StatusBackingStore, TargetState as HerderTargetState, TaskInfo, TaskStateInfo,
-    VersionRange,
+    ActiveTopicsInfo, Callback, ConfigInfo, ConfigInfos, ConfigKeyInfo, ConnectorInfo, ConnectorState, ConnectorStateInfo, ConnectorTaskId as HerderConnectorTaskId,
+    Created, LoggerLevel,
+    Plugins, TaskInfo, TaskStateInfo,
 };
+
+// Import storage types directly from storage module
+// These have full implementations including start/stop methods
 use common_trait::storage::{
     ClusterConfigState, ConfigBackingStore, ConnectorTaskId as StorageConnectorTaskId,
-    TargetState as StorageTargetState,
+    State as StorageState, StatusBackingStore, TargetState as StorageTargetState,
 };
-use common_trait::util::time::{SystemTimeImpl, Time, SYSTEM};
+
+// Import time utilities
+use common_trait::util::time::SystemTimeImpl;
+
 use serde_json::Value;
 
 use super::cached_connectors::CachedConnectors;
 use super::loggers::Loggers;
-use super::status::{ConnectorStatus, State, TaskStatus};
+use super::status::{ConnectorStatus, TaskStatus};
 
 /// ConnectorType - The type of connector (source, sink, or unknown).
 ///
@@ -74,7 +79,7 @@ impl std::fmt::Display for ConnectorType {
 /// This struct provides common functionality shared between
 /// DistributedHerder and StandaloneHerder.
 ///
-/// Thread safety: Uses atomic flags for ready state.
+/// Thread safety: Uses atomic flags for ready state, Mutex for backing stores.
 ///
 /// Corresponds to `org.apache.kafka.connect.runtime.AbstractHerder` in Java.
 pub struct AbstractHerder {
@@ -83,9 +88,11 @@ pub struct AbstractHerder {
     /// Kafka cluster ID.
     kafka_cluster_id: String,
     /// Status backing store for connector/task status.
-    status_backing_store: Arc<dyn StatusBackingStore>,
+    /// Wrapped in Mutex to allow start/stop calls (which require &mut self).
+    status_backing_store: Arc<Mutex<dyn StatusBackingStore>>,
     /// Config backing store for connector/task configs.
-    config_backing_store: Arc<dyn ConfigBackingStore>,
+    /// Wrapped in Mutex to allow start/stop calls (which require &mut self).
+    config_backing_store: Arc<Mutex<dyn ConfigBackingStore>>,
     /// Whether the herder is ready.
     ready: AtomicBool,
     /// Plugins instance.
@@ -104,15 +111,15 @@ impl AbstractHerder {
     /// # Arguments
     /// * `worker_id` - The worker ID.
     /// * `kafka_cluster_id` - The Kafka cluster ID.
-    /// * `status_backing_store` - Status backing store.
-    /// * `config_backing_store` - Config backing store.
+    /// * `status_backing_store` - Status backing store (wrapped in Mutex for start/stop).
+    /// * `config_backing_store` - Config backing store (wrapped in Mutex for start/stop).
     /// * `plugins` - Plugins instance.
     /// * `time` - Time instance.
     pub fn new(
         worker_id: String,
         kafka_cluster_id: String,
-        status_backing_store: Arc<dyn StatusBackingStore>,
-        config_backing_store: Arc<dyn ConfigBackingStore>,
+        status_backing_store: Arc<Mutex<dyn StatusBackingStore>>,
+        config_backing_store: Arc<Mutex<dyn ConfigBackingStore>>,
         plugins: Arc<dyn Plugins>,
         time: Arc<SystemTimeImpl>,
     ) -> Self {
@@ -153,12 +160,12 @@ impl AbstractHerder {
     }
 
     /// Get the status backing store.
-    pub fn status_backing_store(&self) -> &Arc<dyn StatusBackingStore> {
+    pub fn status_backing_store(&self) -> &Arc<Mutex<dyn StatusBackingStore>> {
         &self.status_backing_store
     }
 
     /// Get the config backing store.
-    pub fn config_backing_store(&self) -> &Arc<dyn ConfigBackingStore> {
+    pub fn config_backing_store(&self) -> &Arc<Mutex<dyn ConfigBackingStore>> {
         &self.config_backing_store
     }
 
@@ -180,6 +187,86 @@ impl AbstractHerder {
     /// Get the time instance.
     pub fn time(&self) -> &Arc<SystemTimeImpl> {
         &self.time
+    }
+
+    // ===== Abstract methods (to be overridden by subclasses) =====
+
+    /// Get the current generation ID.
+    ///
+    /// This is an abstract method in Java that must be overridden by subclasses.
+    /// DistributedHerder returns the actual generation from Kafka group membership.
+    /// StandaloneHerder returns -1 (NO_GENERATION) as there's no group coordination.
+    ///
+    /// Corresponds to Java `AbstractHerder.generation()`.
+    ///
+    /// # Returns
+    /// The current generation ID, or -1 if not applicable (standalone mode).
+    pub fn generation(&self) -> i32 {
+        // Default implementation: NO_GENERATION (-1)
+        // Subclasses (DistributedHerder) should override this
+        -1
+    }
+
+    // ===== Lifecycle methods =====
+
+    /// Start the backing store services.
+    ///
+    /// This method starts the status backing store and config backing store.
+    /// In Java, this also calls worker.start(), but Worker is managed separately
+    /// in Rust implementation (DistributedHerder has its own Worker reference).
+    ///
+    /// Corresponds to Java `AbstractHerder.startServices()`.
+    ///
+    /// # Implementation Note
+    /// Java implementation:
+    /// ```java
+    /// protected void startServices() {
+    ///     this.worker.start();
+    ///     this.statusBackingStore.start();
+    ///     this.configBackingStore.start();
+    /// }
+    /// ```
+    pub fn start_services(&self) {
+        // Start status backing store
+        if let Ok(mut store) = self.status_backing_store.lock() {
+            store.start();
+        }
+
+        // Start config backing store
+        if let Ok(mut store) = self.config_backing_store.lock() {
+            store.start();
+        }
+    }
+
+    /// Stop the backing store services.
+    ///
+    /// This method stops the status backing store and config backing store.
+    /// In Java, this also calls worker.stop() and connector_executor.shutdown(),
+    /// but those are managed separately in Rust implementation.
+    ///
+    /// Corresponds to Java `AbstractHerder.stopServices()`.
+    ///
+    /// # Implementation Note
+    /// Java implementation:
+    /// ```java
+    /// protected void stopServices() {
+    ///     this.statusBackingStore.stop();
+    ///     this.configBackingStore.stop();
+    ///     this.worker.stop();
+    ///     this.connectorExecutor.shutdown();
+    ///     Utils.closeQuietly(this.connectorClientConfigOverridePolicyPlugin, ...);
+    /// }
+    /// ```
+    pub fn stop_services(&self) {
+        // Stop status backing store
+        if let Ok(mut store) = self.status_backing_store.lock() {
+            store.stop();
+        }
+
+        // Stop config backing store
+        if let Ok(mut store) = self.config_backing_store.lock() {
+            store.stop();
+        }
     }
 
     // ===== Status listener methods (ConnectorStatus.Listener) =====
@@ -402,7 +489,12 @@ impl AbstractHerder {
     /// Returns connector name, config, and task IDs.
     /// Corresponds to Java `AbstractHerder.connectorInfo(String connector)`.
     pub fn connector_info(&self, connector: &str) -> Option<ConnectorInfo> {
-        let config_state = self.config_backing_store.snapshot();
+        // Get config state snapshot from backing store
+        let config_state = if let Ok(store) = self.config_backing_store.lock() {
+            store.snapshot()
+        } else {
+            return None;
+        };
 
         if !config_state.contains(connector) {
             return None;
@@ -439,16 +531,48 @@ impl AbstractHerder {
     ///
     /// Returns the current status of the connector and its tasks.
     /// Corresponds to Java `AbstractHerder.connectorStatus(String connName)`.
+    ///
+    /// # Implementation Note
+    /// In Java, ConnectorStateInfo contains a ConnectorState struct with state, workerId, trace, version.
+    /// In Rust, ConnectorStateInfo.connector is a ConnectorState enum (state only).
+    /// The worker_id and trace info are captured in logs but not returned in ConnectorStateInfo.
+    /// This is a design difference between Java and current Rust implementation.
     pub fn connector_status(&self, conn_name: &str) -> Option<ConnectorStateInfo> {
         // Get connector status from backing store
-        let connector_state = self.status_backing_store.get_connector_state(conn_name)?;
+        let connector_status = if let Ok(store) = self.status_backing_store.lock() {
+            store.get_connector_status(conn_name)
+        } else {
+            return None;
+        };
+
+        // If no connector status, return None
+        let connector_status = connector_status?;
 
         // Get task statuses
-        let task_states: Vec<TaskStateInfo> = Vec::new(); // Would get from status_backing_store
+        let task_statuses = if let Ok(store) = self.status_backing_store.lock() {
+            store.get_all_task_statuses(conn_name)
+        } else {
+            Vec::new()
+        };
 
+        // Convert task statuses to TaskStateInfo
+        let task_states: Vec<TaskStateInfo> = task_statuses
+            .into_iter()
+            .map(|ts| TaskStateInfo {
+                id: HerderConnectorTaskId {
+                    connector: ts.id().connector.clone(),
+                    task: ts.id().task,
+                },
+                state: convert_state_to_connector_state(ts.state()),
+                worker_id: ts.worker_id().to_string(),
+                trace: ts.trace().map(|s| s.to_string()),
+            })
+            .collect();
+
+        // Convert connector status to ConnectorState (enum)
         Some(ConnectorStateInfo {
             name: conn_name.to_string(),
-            connector: connector_state,
+            connector: convert_state_to_connector_state(connector_status.state()),
             tasks: task_states,
         })
     }
@@ -675,10 +799,21 @@ impl AbstractHerder {
     /// Sets the target state to PAUSED.
     /// Corresponds to Java `AbstractHerder.pauseConnector(String connector)`.
     pub fn pause_connector(&self, connector: &str) -> Result<(), String> {
-        if !self.config_backing_store.contains(connector) {
+        let contains = if let Ok(store) = self.config_backing_store.lock() {
+            store.contains(connector)
+        } else {
+            false
+        };
+
+        if !contains {
             return Err(format!("Unknown connector {}", connector));
         }
-        // Would put PAUSED target state
+
+        // Put PAUSED target state
+        if let Ok(mut store) = self.config_backing_store.lock() {
+            store.put_target_state(connector, StorageTargetState::Paused);
+        }
+
         Ok(())
     }
 
@@ -687,10 +822,21 @@ impl AbstractHerder {
     /// Sets the target state to STARTED.
     /// Corresponds to Java `AbstractHerder.resumeConnector(String connector)`.
     pub fn resume_connector(&self, connector: &str) -> Result<(), String> {
-        if !self.config_backing_store.contains(connector) {
+        let contains = if let Ok(store) = self.config_backing_store.lock() {
+            store.contains(connector)
+        } else {
+            false
+        };
+
+        if !contains {
             return Err(format!("Unknown connector {}", connector));
         }
-        // Would put STARTED target state
+
+        // Put STARTED target state
+        if let Ok(mut store) = self.config_backing_store.lock() {
+            store.put_target_state(connector, StorageTargetState::Started);
+        }
+
         Ok(())
     }
 
@@ -698,12 +844,59 @@ impl AbstractHerder {
     ///
     /// Corresponds to Java `AbstractHerder.connectors()`.
     pub fn connectors(&self) -> Vec<String> {
-        self.config_backing_store
-            .snapshot()
-            .connectors()
-            .into_iter()
-            .cloned()
-            .collect()
+        if let Ok(store) = self.config_backing_store.lock() {
+            store.snapshot().connectors().into_iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    // ===== Task configs method =====
+
+    /// Get task configurations for a connector.
+    ///
+    /// Returns a list of TaskInfo containing each task's configuration.
+    /// Corresponds to Java `Herder.taskConfigs(String connName, Callback<List<TaskInfo>> callback)`.
+    ///
+    /// # Arguments
+    /// * `conn_name` - The connector name.
+    ///
+    /// # Returns
+    /// A list of TaskInfo for all tasks belonging to the connector, or None if connector not found.
+    pub fn task_configs(&self, conn_name: &str) -> Option<Vec<TaskInfo>> {
+        // Get config state snapshot
+        let config_state = if let Ok(store) = self.config_backing_store.lock() {
+            store.snapshot()
+        } else {
+            return None;
+        };
+
+        // Check if connector exists
+        if !config_state.contains(conn_name) {
+            return None;
+        }
+
+        // Build list of task configs
+        let task_count = config_state.task_count(conn_name);
+        let mut result: Vec<TaskInfo> = Vec::new();
+
+        for index in 0..task_count {
+            let task_id = StorageConnectorTaskId::new(conn_name.to_string(), index);
+            let task_config = config_state
+                .task_config(&task_id)
+                .cloned()
+                .unwrap_or_default();
+
+            result.push(TaskInfo {
+                id: HerderConnectorTaskId {
+                    connector: conn_name.to_string(),
+                    task: index,
+                },
+                config: task_config,
+            });
+        }
+
+        Some(result)
     }
 }
 
@@ -714,6 +907,22 @@ impl AbstractHerder {
 /// Corresponds to Java `AbstractHerder.trace(Throwable t)`.
 fn trace_error(error: &dyn std::error::Error) -> String {
     error.to_string()
+}
+
+/// Convert storage::State to herder::ConnectorState.
+///
+/// Maps the storage layer state enum to the herder layer state enum.
+/// Used when retrieving status from backing store and converting to ConnectorStateInfo.
+fn convert_state_to_connector_state(state: StorageState) -> ConnectorState {
+    match state {
+        StorageState::Unassigned => ConnectorState::Unassigned,
+        StorageState::Running => ConnectorState::Running,
+        StorageState::Paused => ConnectorState::Paused,
+        StorageState::Failed => ConnectorState::Failed,
+        StorageState::Destroyed => ConnectorState::Destroyed,
+        StorageState::Restarting => ConnectorState::Restarting,
+        StorageState::Stopped => ConnectorState::Stopped,
+    }
 }
 
 /// Check if task configs have changed.

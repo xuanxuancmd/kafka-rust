@@ -15,6 +15,24 @@
 
 //! Connect mirror module for Kafka Connect MirrorMaker.
 
+pub mod checkpoint;
+pub mod checkpoint_store;
+pub mod config;
+pub mod filters;
+pub mod heartbeat;
 pub mod mirror_connector;
+pub mod offset_sync;
+pub mod scheduler;
+pub mod source;
+pub mod util;
 
+pub use checkpoint::*;
+pub use checkpoint_store::*;
+pub use config::*;
+pub use filters::*;
+pub use heartbeat::*;
 pub use mirror_connector::*;
+pub use offset_sync::*;
+pub use scheduler::*;
+pub use source::*;
+pub use util::*;

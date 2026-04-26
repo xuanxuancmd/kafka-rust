@@ -23,10 +23,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 
 use common_trait::storage::WorkerConfig;
-use common_trait::util::time::{Time, SYSTEM};
+use common_trait::util::time::Time;
 
 /// Topic cleanup policy for compaction.
 pub const CLEANUP_POLICY_COMPACT: &str = "compact";
@@ -322,6 +322,7 @@ pub trait TopicBasedStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common_trait::util::time::SYSTEM;
 
     #[test]
     fn test_topic_description_new() {

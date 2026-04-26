@@ -186,6 +186,19 @@ impl TopicListing {
     }
 }
 
+/// Specification for which offset to list.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.OffsetSpec` in Java.
+#[derive(Debug, Clone, Copy)]
+pub enum OffsetSpec {
+    /// List the earliest offset.
+    Earliest,
+    /// List the latest offset.
+    Latest,
+    /// List the offset at a specific timestamp.
+    Timestamp(i64),
+}
+
 /// Error for topic operations.
 ///
 /// This corresponds to various topic-related exceptions in Java.
@@ -199,6 +212,16 @@ pub enum TopicError {
     InvalidConfig { topic: String, message: String },
     /// Operation failed.
     Failed { topic: String, message: String },
+    /// Invalid replication factor.
+    InvalidReplicationFactor { topic: String, message: String },
+    /// Timeout during operation.
+    Timeout { topic: String, message: String },
+    /// Authorization failed.
+    Authorization { topic: String, message: String },
+    /// Unsupported version.
+    UnsupportedVersion { topic: String, message: String },
+    /// Leader not available.
+    LeaderNotAvailable { topic: String, message: String },
 }
 
 impl std::fmt::Display for TopicError {
@@ -215,6 +238,25 @@ impl std::fmt::Display for TopicError {
             }
             TopicError::Failed { topic, message } => {
                 write!(f, "Operation failed for topic '{}': {}", topic, message)
+            }
+            TopicError::InvalidReplicationFactor { topic, message } => {
+                write!(
+                    f,
+                    "Invalid replication factor for topic '{}': {}",
+                    topic, message
+                )
+            }
+            TopicError::Timeout { topic, message } => {
+                write!(f, "Timeout for topic '{}': {}", topic, message)
+            }
+            TopicError::Authorization { topic, message } => {
+                write!(f, "Authorization failed for topic '{}': {}", topic, message)
+            }
+            TopicError::UnsupportedVersion { topic, message } => {
+                write!(f, "Unsupported version for topic '{}': {}", topic, message)
+            }
+            TopicError::LeaderNotAvailable { topic, message } => {
+                write!(f, "Leader not available for topic '{}': {}", topic, message)
             }
         }
     }
@@ -257,6 +299,173 @@ impl std::fmt::Display for ConsumerGroupError {
 }
 
 impl std::error::Error for ConsumerGroupError {}
+
+/// Error for configuration operations.
+///
+/// This corresponds to various configuration-related exceptions in Java.
+#[derive(Debug, Clone)]
+pub enum ConfigError {
+    /// Resource does not exist.
+    DoesNotExist { resource: String, message: String },
+    /// Invalid configuration value.
+    InvalidValue {
+        resource: String,
+        key: String,
+        message: String,
+    },
+    /// Operation failed.
+    Failed { resource: String, message: String },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::DoesNotExist { resource, message } => {
+                write!(f, "Resource '{}' does not exist: {}", resource, message)
+            }
+            ConfigError::InvalidValue {
+                resource,
+                key,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Invalid value for config '{}' on resource '{}': {}",
+                    key, resource, message
+                )
+            }
+            ConfigError::Failed { resource, message } => {
+                write!(
+                    f,
+                    "Operation failed for resource '{}': {}",
+                    resource, message
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Resource type for configuration operations.
+///
+/// This corresponds to `org.apache.kafka.common.config.ConfigResource.Type` in Java.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConfigResourceType {
+    /// Broker resource.
+    Broker,
+    /// Topic resource.
+    Topic,
+}
+
+/// Resource identifier for configuration operations.
+///
+/// This corresponds to `org.apache.kafka.common.config.ConfigResource` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConfigResource {
+    /// The resource type.
+    type_: ConfigResourceType,
+    /// The resource name (topic name or broker ID).
+    name: String,
+}
+
+impl ConfigResource {
+    /// Creates a new config resource.
+    pub fn new(type_: ConfigResourceType, name: impl Into<String>) -> Self {
+        ConfigResource {
+            type_,
+            name: name.into(),
+        }
+    }
+
+    /// Returns the resource type.
+    pub fn type_(&self) -> ConfigResourceType {
+        self.type_
+    }
+
+    /// Returns the resource name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Operation type for incremental config modification.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.AlterConfigOp.OpType` in Java.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlterConfigOpType {
+    /// Set the value (replaces current value).
+    Set,
+    /// Delete the config (reverts to default).
+    Delete,
+    /// Append to list-type config.
+    Append,
+    /// Subtract from list-type config.
+    Subtract,
+}
+
+/// A single configuration modification operation.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.AlterConfigOp` in Java.
+#[derive(Debug, Clone)]
+pub struct AlterConfigOp {
+    /// The configuration key name.
+    key: String,
+    /// The configuration value.
+    value: String,
+    /// The operation type.
+    op_type: AlterConfigOpType,
+}
+
+impl AlterConfigOp {
+    /// Creates a new alter config operation.
+    pub fn new(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        op_type: AlterConfigOpType,
+    ) -> Self {
+        AlterConfigOp {
+            key: key.into(),
+            value: value.into(),
+            op_type,
+        }
+    }
+
+    /// Creates a SET operation.
+    pub fn set(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Set)
+    }
+
+    /// Creates a DELETE operation.
+    pub fn delete(key: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, "", AlterConfigOpType::Delete)
+    }
+
+    /// Creates an APPEND operation.
+    pub fn append(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Append)
+    }
+
+    /// Creates a SUBTRACT operation.
+    pub fn subtract(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Subtract)
+    }
+
+    /// Returns the configuration key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the configuration value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Returns the operation type.
+    pub fn op_type(&self) -> AlterConfigOpType {
+        self.op_type
+    }
+}
 
 /// Internal topic information stored in the mock.
 #[derive(Debug, Clone)]
@@ -479,6 +688,21 @@ impl MockAdmin {
 
     // ===== Consumer Group Offset Management =====
 
+    // ===== Consumer Group Management =====
+
+    /// Lists all consumer groups.
+    ///
+    /// This corresponds to `Admin.listConsumerGroups()` in Java.
+    /// Returns a `ListConsumerGroupsResult` containing all consumer group listings.
+    pub fn list_consumer_groups(&self) -> ListConsumerGroupsResult {
+        let offsets_state = self.consumer_group_offsets.lock().unwrap();
+        let listings: Vec<ConsumerGroupListing> = offsets_state
+            .keys()
+            .map(|group_id| ConsumerGroupListing::new(group_id.clone(), true))
+            .collect();
+        ListConsumerGroupsResult::new(listings)
+    }
+
     /// Lists consumer group offsets.
     ///
     /// This corresponds to `Admin.listConsumerGroupOffsets()` in Java.
@@ -622,7 +846,179 @@ impl MockAdmin {
         result
     }
 
+    // ===== Configuration Management =====
+
+    /// Incrementally alters topic configurations.
+    ///
+    /// This corresponds to `Admin.incrementalAlterConfigs()` in Java.
+    /// Supports SET, DELETE, APPEND, and SUBTRACT operations on topic configs.
+    ///
+    /// Behavior:
+    /// - If a topic does not exist, returns an error for that resource.
+    /// - For TOPIC resources, modifies the topic's configs.
+    /// - BROKER resources are not supported in mock.
+    ///
+    /// # Arguments
+    /// * `configs` - Map of ConfigResource to collection of AlterConfigOp operations
+    pub fn incremental_alter_configs(
+        &self,
+        configs: HashMap<ConfigResource, Vec<AlterConfigOp>>,
+    ) -> AlterConfigsResult {
+        self.incremental_alter_configs_with_options(configs, AlterConfigsOptions::default())
+    }
+
+    /// Incrementally alters topic configurations with options.
+    pub fn incremental_alter_configs_with_options(
+        &self,
+        configs: HashMap<ConfigResource, Vec<AlterConfigOp>>,
+        options: AlterConfigsOptions,
+    ) -> AlterConfigsResult {
+        let mut result = AlterConfigsResult::new();
+        let mut topics_state = self.topics.lock().unwrap();
+
+        for (resource, ops) in configs {
+            // Only support TOPIC resources in mock
+            if resource.type_() != ConfigResourceType::Topic {
+                result.add_error(
+                    resource.clone(),
+                    ConfigError::Failed {
+                        resource: resource.name().to_string(),
+                        message: "Only TOPIC resources are supported in mock".to_string(),
+                    },
+                );
+                continue;
+            }
+
+            let topic_name = resource.name();
+            if !topics_state.contains_key(topic_name) {
+                result.add_error(
+                    resource.clone(),
+                    ConfigError::DoesNotExist {
+                        resource: topic_name.to_string(),
+                        message: "Topic does not exist".to_string(),
+                    },
+                );
+                continue;
+            }
+
+            if options.validate_only_value() {
+                // Just validate, don't apply changes
+                result.add_success(resource);
+                continue;
+            }
+
+            // Apply the operations
+            let topic = topics_state.get_mut(topic_name).unwrap();
+            for op in ops {
+                let key = op.key();
+                let op_type = op.op_type();
+
+                match op_type {
+                    AlterConfigOpType::Set => {
+                        topic
+                            .configs
+                            .insert(key.to_string(), op.value().to_string());
+                    }
+                    AlterConfigOpType::Delete => {
+                        topic.configs.remove(key);
+                    }
+                    AlterConfigOpType::Append => {
+                        // For list-type configs, append to existing value
+                        let current = topic.configs.get(key).cloned().unwrap_or_default();
+                        let new_value = if current.is_empty() {
+                            op.value().to_string()
+                        } else {
+                            format!("{}{}", current, op.value())
+                        };
+                        topic.configs.insert(key.to_string(), new_value);
+                    }
+                    AlterConfigOpType::Subtract => {
+                        // For list-type configs, subtract from existing value
+                        if let Some(current) = topic.configs.get(key) {
+                            let value_to_remove = op.value();
+                            // Simple implementation: remove substring if present
+                            let new_value = current.replace(value_to_remove, "");
+                            if new_value.is_empty() {
+                                topic.configs.remove(key);
+                            } else {
+                                topic.configs.insert(key.to_string(), new_value);
+                            }
+                        }
+                    }
+                }
+            }
+
+            result.add_success(resource);
+        }
+
+        result
+    }
+
     // ===== Utility methods for testing =====
+
+    /// Lists offsets for partitions.
+    ///
+    /// This corresponds to `Admin.listOffsets()` in Java.
+    /// Returns the offsets for the specified partitions based on the offset spec.
+    pub fn list_offsets(
+        &self,
+        partitions: Vec<TopicPartition>,
+        spec: OffsetSpec,
+    ) -> HashMap<TopicPartition, Result<i64, TopicError>> {
+        let topics_state = self.topics.lock().unwrap();
+        let mut results = HashMap::new();
+
+        for tp in partitions {
+            let topic_name = tp.topic().to_string();
+            let partition = tp.partition();
+            if let Some(topic) = topics_state.get(&topic_name) {
+                if partition < 0 || partition >= topic.num_partitions {
+                    results.insert(tp, Err(TopicError::DoesNotExist { topic: topic_name }));
+                } else {
+                    // Return a mock offset based on the spec
+                    let offset = match spec {
+                        OffsetSpec::Earliest => 0,
+                        OffsetSpec::Latest => 1000, // Mock latest offset
+                        OffsetSpec::Timestamp(ts) => {
+                            // Simple mock: return offset based on timestamp
+                            if ts > 0 {
+                                (ts / 1000) as i64 // Simplified mapping
+                            } else {
+                                0
+                            }
+                        }
+                    };
+                    results.insert(tp, Ok(offset));
+                }
+            } else {
+                results.insert(tp, Err(TopicError::DoesNotExist { topic: topic_name }));
+            }
+        }
+
+        results
+    }
+
+    /// Describes topic configurations.
+    ///
+    /// This corresponds to `Admin.describeConfigs()` for topics in Java.
+    /// Returns the configurations for the specified topics.
+    pub fn describe_topic_configs(
+        &self,
+        topic_names: &[String],
+    ) -> HashMap<String, Option<HashMap<String, String>>> {
+        let topics_state = self.topics.lock().unwrap();
+        let mut results = HashMap::new();
+
+        for topic_name in topic_names {
+            if let Some(topic) = topics_state.get(topic_name) {
+                results.insert(topic_name.clone(), Some(topic.configs.clone()));
+            } else {
+                results.insert(topic_name.clone(), None);
+            }
+        }
+
+        results
+    }
 
     /// Clears all state (topics and consumer group offsets).
     pub fn clear(&self) {
@@ -917,6 +1313,46 @@ impl Default for AlterConsumerGroupOffsetsOptions {
     }
 }
 
+/// Options for incrementalAlterConfigs operation.
+#[derive(Debug, Clone)]
+pub struct AlterConfigsOptions {
+    timeout_ms: i32,
+    validate_only: bool,
+}
+
+impl AlterConfigsOptions {
+    pub fn new() -> Self {
+        AlterConfigsOptions {
+            timeout_ms: 60000,
+            validate_only: false,
+        }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+
+    pub fn validate_only_value(&self) -> bool {
+        self.validate_only
+    }
+}
+
+impl Default for AlterConfigsOptions {
+    fn default() -> Self {
+        AlterConfigsOptions::new()
+    }
+}
+
 // ===== Result Types =====
 
 /// Result of createTopics operation.
@@ -1074,6 +1510,64 @@ impl ListTopicsResult {
     }
 }
 
+/// Listing for a consumer group.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.ConsumerGroupListing` in Java.
+#[derive(Debug, Clone)]
+pub struct ConsumerGroupListing {
+    group_id: String,
+    is_simple: bool,
+}
+
+impl ConsumerGroupListing {
+    /// Creates a new consumer group listing.
+    pub fn new(group_id: impl Into<String>, is_simple: bool) -> Self {
+        ConsumerGroupListing {
+            group_id: group_id.into(),
+            is_simple,
+        }
+    }
+
+    /// Returns the consumer group ID.
+    pub fn group_id(&self) -> &str {
+        &self.group_id
+    }
+
+    /// Returns whether the group is simple (not using consumer group protocol).
+    pub fn is_simple(&self) -> bool {
+        self.is_simple
+    }
+}
+
+/// Result of listConsumerGroups operation.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.ListConsumerGroupsResult` in Java.
+#[derive(Debug)]
+pub struct ListConsumerGroupsResult {
+    listings: Vec<ConsumerGroupListing>,
+}
+
+impl ListConsumerGroupsResult {
+    fn new(listings: Vec<ConsumerGroupListing>) -> Self {
+        ListConsumerGroupsResult { listings }
+    }
+
+    /// Returns all consumer group listings.
+    pub fn listings(&self) -> &Vec<ConsumerGroupListing> {
+        &self.listings
+    }
+
+    /// Returns consumer group IDs.
+    pub fn group_ids(&self) -> Vec<String> {
+        self.listings.iter().map(|l| l.group_id.clone()).collect()
+    }
+
+    /// Returns the number of consumer groups.
+    pub fn count(&self) -> usize {
+        self.listings.len()
+    }
+}
+
 /// Result of describeTopics operation.
 #[derive(Debug)]
 pub struct DescribeTopicsResult {
@@ -1115,6 +1609,70 @@ impl DescribeTopicsResult {
     /// Returns all failed topic descriptions.
     pub fn errors(&self) -> &HashMap<String, TopicError> {
         &self.errors
+    }
+}
+
+/// Result of incrementalAlterConfigs operation.
+#[derive(Debug)]
+pub struct AlterConfigsResult {
+    successes: HashSet<ConfigResource>,
+    errors: HashMap<ConfigResource, ConfigError>,
+}
+
+impl AlterConfigsResult {
+    fn new() -> Self {
+        AlterConfigsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, resource: ConfigResource) {
+        self.successes.insert(resource);
+    }
+
+    fn add_error(&mut self, resource: ConfigResource, error: ConfigError) {
+        self.errors.insert(resource, error);
+    }
+
+    /// Returns whether a resource was altered successfully.
+    pub fn success(&self, resource: &ConfigResource) -> bool {
+        self.successes.contains(resource)
+    }
+
+    /// Returns the error for a failed resource.
+    pub fn error(&self, resource: &ConfigResource) -> Option<&ConfigError> {
+        self.errors.get(resource)
+    }
+
+    /// Returns all successfully altered resources.
+    pub fn successes(&self) -> &HashSet<ConfigResource> {
+        &self.successes
+    }
+
+    /// Returns all failed resources.
+    pub fn errors(&self) -> &HashMap<ConfigResource, ConfigError> {
+        &self.errors
+    }
+
+    /// Returns the number of successful alterations.
+    pub fn success_count(&self) -> usize {
+        self.successes.len()
+    }
+
+    /// Returns the number of failed alterations.
+    pub fn failed_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Returns whether all resources were altered successfully.
+    pub fn all_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns whether any resources failed.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
     }
 }
 
@@ -1549,5 +2107,134 @@ mod tests {
         assert_eq!(admin.topic_count(), 2);
         assert!(admin.topic_exists("topic1"));
         assert!(admin.topic_exists("topic2"));
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_set() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+        assert!(result.success(&resource));
+
+        // Verify config was set
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("retention.ms"),
+            Some(&"86400000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_delete() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![
+            NewTopic::new("topic1", 3, 2).config("retention.ms", "86400000")
+        ]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::delete("retention.ms")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        // Verify config was deleted
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert!(configs_map.get("retention.ms").is_none());
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_append() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![
+            NewTopic::new("topic1", 3, 2).config("cleanup.policy", "delete")
+        ]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::append("cleanup.policy", ",compact")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        // Verify config was appended
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("cleanup.policy"),
+            Some(&"delete,compact".to_string())
+        );
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_nonexistent_topic() {
+        let admin = MockAdmin::new();
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "nonexistent");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.has_errors());
+        assert!(matches!(
+            result.error(&resource),
+            Some(ConfigError::DoesNotExist { .. })
+        ));
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_validate_only() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+        let options = AlterConfigsOptions::new().validate_only(true);
+
+        let result = admin.incremental_alter_configs_with_options(configs, options);
+        assert!(result.all_success());
+
+        // Verify config was NOT actually set
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert!(configs_map.get("retention.ms").is_none());
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_multiple_ops() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)
+            .config("retention.ms", "86400000")
+            .config("cleanup.policy", "delete")]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![
+            AlterConfigOp::set("retention.ms", "172800000"),
+            AlterConfigOp::append("cleanup.policy", ",compact"),
+        ];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("retention.ms"),
+            Some(&"172800000".to_string())
+        );
+        assert_eq!(
+            configs_map.get("cleanup.policy"),
+            Some(&"delete,compact".to_string())
+        );
     }
 }

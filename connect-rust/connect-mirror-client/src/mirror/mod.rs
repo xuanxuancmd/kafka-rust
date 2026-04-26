@@ -21,6 +21,7 @@ pub mod checkpoint;
 pub mod heartbeat;
 pub mod mirror_client;
 pub mod mirror_client_config;
+pub mod offset_sync;
 pub mod remote_cluster_utils;
 pub mod replication_policy;
 pub mod source_and_target;
@@ -40,6 +41,10 @@ pub use mirror_client_config::{
     INTERNAL_TOPIC_SEPARATOR_ENABLED_DEFAULT, PRODUCER_CLIENT_PREFIX, REPLICATION_POLICY_CLASS,
     REPLICATION_POLICY_CLASS_DEFAULT, REPLICATION_POLICY_SEPARATOR,
     REPLICATION_POLICY_SEPARATOR_DEFAULT,
+};
+pub use offset_sync::{
+    OffsetSync, DOWNSTREAM_OFFSET_KEY as OFFSET_SYNC_DOWNSTREAM_OFFSET_KEY,
+    UPSTREAM_OFFSET_KEY as OFFSET_SYNC_UPSTREAM_OFFSET_KEY,
 };
 pub use remote_cluster_utils::{
     checkpoint_topics, heartbeat_topics, replication_hops, translate_offsets, upstream_clusters,

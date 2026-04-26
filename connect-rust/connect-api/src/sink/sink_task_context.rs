@@ -31,5 +31,5 @@ pub trait SinkTaskContext {
     fn timeout(&self) -> i64;
 
     /// Returns the plugin metrics.
-    fn plugin_metrics(&self) -> Option<&dyn PluginMetrics>;
+    fn plugin_metrics(&self) -> Option<&(dyn PluginMetrics + Send + Sync)>;
 }

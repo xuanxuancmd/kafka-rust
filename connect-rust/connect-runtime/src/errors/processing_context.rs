@@ -17,7 +17,6 @@
 //!
 //! This corresponds to `org.apache.kafka.connect.runtime.errors.ProcessingContext` in Java.
 
-use std::any::Any;
 use std::error::Error;
 use std::fmt;
 use std::time::Instant;

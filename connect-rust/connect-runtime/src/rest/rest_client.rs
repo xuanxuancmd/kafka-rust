@@ -378,7 +378,7 @@ impl RestClientBuilder {
 
     /// Builds the RestClient.
     pub fn build(self) -> RestClient {
-        let mut client = RestClient::with_timeout(self.base_url, self.timeout);
+        let client = RestClient::with_timeout(self.base_url, self.timeout);
         // Note: We would need to modify RestClient to support default headers
         // For now, headers can be passed per-request
         client

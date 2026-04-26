@@ -24,13 +24,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use common_trait::storage::{ConnectorStatus, ConnectorTaskId, StatusBackingStore, TaskStatus, TopicStatus, WorkerConfig, State};
+use common_trait::storage::{ConnectorStatus, ConnectorTaskId, StatusBackingStore, TaskStatus, TopicStatus, WorkerConfig};
 use common_trait::util::time::{Time, SYSTEM};
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 
-use super::kafka_topic_based_backing_store::{KafkaBasedLog, SendCompletionCallback, TopicAdmin, TopicDescription};
+use super::kafka_topic_based_backing_store::{KafkaBasedLog, TopicAdmin};
 
 /// Configuration key for status storage topic.
 pub const STATUS_STORAGE_TOPIC_CONFIG: &str = "status.storage.topic";
@@ -486,6 +486,7 @@ impl StatusBackingStore for KafkaStatusBackingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common_trait::storage::State;
 
     #[test]
     fn test_new_store() {

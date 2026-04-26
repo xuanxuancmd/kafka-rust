@@ -25,12 +25,10 @@
 //! - **LogReporterSource**: Source task specific log reporter
 //! - **DeadLetterQueueReporter**: Reports errors to a dead letter queue topic
 
-use std::error::Error;
 use std::sync::Arc;
 
 use super::metrics::ErrorHandlingMetrics;
 use super::processing_context::ProcessingContext;
-use super::stage::Stage;
 use common_trait::worker::ConnectorTaskId;
 
 use crate::config::ConnectorConfig;
@@ -417,12 +415,13 @@ impl ErrorReporter for DeadLetterQueueReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::Stage;
     use std::io;
     use std::sync::Arc;
 
     fn create_failed_context() -> ProcessingContext {
         let mut ctx = ProcessingContext::new();
-        ctx.set_stage(super::Stage::KEY_CONVERTER);
+        ctx.set_stage(Stage::KEY_CONVERTER);
         ctx.set_executing_class("TestClass".to_string());
         ctx.increment_attempts();
         let error = io::Error::new(io::ErrorKind::Other, "test error");

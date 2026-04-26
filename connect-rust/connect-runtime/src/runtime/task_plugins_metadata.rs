@@ -20,7 +20,6 @@
 //!
 //! Corresponds to `org.apache.kafka.connect.runtime.TaskPluginsMetadata` in Java.
 
-use crate::isolation::plugin_type::PluginType;
 use std::collections::HashSet;
 
 /// Connector type enumeration.

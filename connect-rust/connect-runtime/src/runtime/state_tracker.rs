@@ -19,7 +19,6 @@
 //! Corresponds to `org.apache.kafka.connect.runtime.StateTracker` in Java.
 
 use crate::runtime::status::State;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Utility class that tracks the current state and the duration of time spent in each state.

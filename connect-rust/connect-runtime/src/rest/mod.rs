@@ -36,6 +36,8 @@ mod rest_request_timeout;
 pub mod rest_server_config;
 mod herder_request_handler;
 mod internal_request_signature;
+mod connect_rest_configurable;
+mod connect_rest_extension_context_impl;
 
 pub use entities::*;
 pub use errors::*;
@@ -50,3 +52,5 @@ pub use rest_request_timeout::*;
 pub use rest_server_config::RestServerConfig;
 pub use herder_request_handler::*;
 pub use internal_request_signature::*;
+pub use connect_rest_configurable::*;
+pub use connect_rest_extension_context_impl::*;

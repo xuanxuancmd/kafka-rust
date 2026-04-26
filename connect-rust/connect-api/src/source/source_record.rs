@@ -35,6 +35,34 @@ pub struct SourceRecord {
     headers: ConnectHeaders,
 }
 
+impl PartialEq for SourceRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.topic == other.topic
+            && self.kafka_partition == other.kafka_partition
+            && self.source_partition == other.source_partition
+            && self.source_offset == other.source_offset
+    }
+}
+
+impl Eq for SourceRecord {}
+
+impl std::hash::Hash for SourceRecord {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.topic.hash(state);
+        self.kafka_partition.hash(state);
+        // Hash the source_partition and source_offset by iterating through keys
+        for (k, v) in &self.source_partition {
+            k.hash(state);
+            // Hash the value as a string representation for simplicity
+            v.to_string().hash(state);
+        }
+        for (k, v) in &self.source_offset {
+            k.hash(state);
+            v.to_string().hash(state);
+        }
+    }
+}
+
 impl SourceRecord {
     /// Creates a new SourceRecord.
     pub fn new(

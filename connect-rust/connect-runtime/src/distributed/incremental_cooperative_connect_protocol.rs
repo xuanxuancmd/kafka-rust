@@ -34,7 +34,7 @@ use crate::distributed::connect_protocol::{
     ConnectProtocolCompatibility, ConnectorTaskId, CONNECTOR_TASK, CONNECT_PROTOCOL_V0,
     CONNECT_PROTOCOL_V1, CONNECT_PROTOCOL_V2,
 };
-use crate::distributed::extended_assignment::{ExtendedAssignment, CONFIG_MISMATCH, NO_ERROR};
+use crate::distributed::extended_assignment::ExtendedAssignment;
 use crate::distributed::extended_worker_state::ExtendedWorkerState;
 
 /// Key name for allocation field in protocol serialization
@@ -553,6 +553,7 @@ impl IncrementalCooperativeConnectProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::distributed::extended_assignment::{CONFIG_MISMATCH, NO_ERROR};
 
     #[test]
     fn test_serialize_deserialize_assignment() {

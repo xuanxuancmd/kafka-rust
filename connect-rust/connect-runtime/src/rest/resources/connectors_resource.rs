@@ -34,7 +34,7 @@ use tokio::sync::RwLock;
 
 use crate::rest::entities::{
     ConnectorInfo, ConnectorList, ConnectorStatus, ConnectorState,
-    ConnectorStateInfo, ConnectorTaskId, TaskStatus, CreateConnectorRequest,
+    ConnectorStateInfo, ConnectorTaskId, CreateConnectorRequest,
     ErrorMessage, ConnectorType,
 };
 

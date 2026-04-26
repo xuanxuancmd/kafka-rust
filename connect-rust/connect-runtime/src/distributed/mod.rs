@@ -33,11 +33,9 @@ pub mod extended_assignment;
 pub mod extended_worker_state;
 pub mod incremental_cooperative_assignor;
 pub mod incremental_cooperative_connect_protocol;
+pub mod worker_coordinator;
 pub mod worker_group_member;
 pub mod worker_rebalance_listener;
-
-// Note: worker_coordinator will be implemented in kafka-clients-mock
-// pub mod worker_coordinator;
 
 // Re-export DistributedHerder from herder module for Java 1:1 API correspondence.
 // Java: org.apache.kafka.connect.runtime.distributed.DistributedHerder

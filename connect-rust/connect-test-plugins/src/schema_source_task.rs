@@ -65,7 +65,7 @@ impl Task for SchemaSourceTask {
 }
 
 impl SourceTask for SchemaSourceTask {
-    fn initialize(&mut self, _: impl SourceTaskContext) {}
+    fn initialize(&mut self, _: Box<dyn SourceTaskContext>) {}
     fn poll(&mut self) -> Result<Vec<SourceRecord>, ConnectError> {
         if self.count >= self.max_num_msgs {
             return Ok(vec![]);

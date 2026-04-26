@@ -24,7 +24,6 @@
 
 use crate::distributed::connect_protocol::ConnectorTaskId;
 use crate::distributed::extended_assignment::ExtendedAssignment;
-use crate::distributed::worker_rebalance_listener::WorkerRebalanceListener;
 use std::sync::Arc;
 
 /// JMX prefix for Connect metrics

@@ -32,6 +32,11 @@ use crate::isolation::plugin_desc::PluginDesc;
 use crate::isolation::plugin_discovery_mode::PluginDiscoveryMode;
 use crate::isolation::plugin_scan_result::PluginScanResult;
 use crate::isolation::plugin_type::PluginType;
+use common_trait::config::ConfigDef;
+use connect_api::data::SchemaAndValue;
+use connect_api::errors::ConnectError;
+use connect_api::storage::Converter;
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -871,11 +876,151 @@ impl Plugins {
         // Cannot resolve, return original
         class_or_alias.to_string()
     }
+
+    /// Compare and swap the context class loader with the delegating class loader.
+    ///
+    /// **Degraded**: In Java, this swaps the thread's context class loader with
+    /// the delegating class loader and returns the original class loader.
+    /// In Rust (simplified), this always returns Ok(true) as there is no
+    /// ClassLoader-based isolation.
+    ///
+    /// Corresponds to Java's `compareAndSwapWithDelegatingLoader()` method.
+    /// Used by MirrorMaker to ensure plugin classes are loadable.
+    ///
+    /// # Returns
+    /// `Ok(true)` in the simplified implementation.
+    pub fn compare_and_swap_with_delegating_loader(&self) -> Result<bool, PluginError> {
+        // Simplified: No ClassLoader to swap, just return true
+        Ok(true)
+    }
+
+    /// Creates an internal Converter for Kafka Connect's internal topics.
+    ///
+    /// **Degraded**: In Java, this instantiates and configures a Converter using
+    /// the delegating class loader. In Rust (simplified), this returns a
+    /// MockConverter instance.
+    ///
+    /// Corresponds to Java's `newInternalConverter(boolean isKey, String className, Map<String, String> converterConfig)` method.
+    /// Used by MirrorMaker for the KafkaOffsetBackingStore.
+    ///
+    /// # Arguments
+    /// * `is_key` - Whether this converter is for keys or values
+    /// * `class_name` - The class name of the converter (ignored in simplified mode)
+    /// * `converter_config` - Configuration for the converter
+    ///
+    /// # Returns
+    /// A MockConverter instance in the simplified implementation.
+    pub fn new_internal_converter(
+        &self,
+        is_key: bool,
+        class_name: &str,
+        converter_config: HashMap<String, String>,
+    ) -> Result<MockConverter, PluginError> {
+        let mut converter = MockConverter::new();
+        // Convert String config to Value config for Converter::configure
+        let value_config: HashMap<String, Value> = converter_config
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+        converter.configure(value_config, is_key);
+        Ok(converter)
+    }
 }
 
 impl Default for Plugins {
     fn default() -> Self {
         Self::new(HashMap::new())
+    }
+}
+
+/// Empty ConfigDef implementation for MockConverter.
+/// Provides an empty configuration definition.
+struct EmptyConfigDef;
+
+impl ConfigDef for EmptyConfigDef {
+    fn config_def(&self) -> HashMap<String, common_trait::config::ConfigValueEntry> {
+        HashMap::new()
+    }
+}
+
+/// Mock Converter for simplified plugin usage.
+///
+/// This is a minimal Converter implementation used when real converter
+/// instantiation is not available (degraded/simplified mode).
+/// Provides basic pass-through functionality for testing and simple use cases.
+///
+/// Used by `new_internal_converter()` for MirrorMaker's internal topics.
+pub struct MockConverter {
+    /// Whether this converter is for keys.
+    is_key: bool,
+    /// Converter configuration.
+    config: HashMap<String, Value>,
+}
+
+impl MockConverter {
+    /// Creates a new MockConverter.
+    pub fn new() -> Self {
+        MockConverter {
+            is_key: false,
+            config: HashMap::new(),
+        }
+    }
+
+    /// Creates a MockConverter with initial configuration.
+    pub fn with_config(config: HashMap<String, Value>, is_key: bool) -> Self {
+        MockConverter { is_key, config }
+    }
+}
+
+impl Default for MockConverter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Converter for MockConverter {
+    fn configure(&mut self, configs: HashMap<String, Value>, is_key: bool) {
+        self.config = configs;
+        self.is_key = is_key;
+    }
+
+    fn from_connect_data(
+        &self,
+        _topic: &str,
+        _schema: Option<&dyn connect_api::data::Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        // Simplified: Just serialize the JSON value to bytes
+        match value {
+            Some(v) => {
+                let bytes = serde_json::to_vec(v)
+                    .map_err(|e| ConnectError::data(format!("Serialization error: {}", e)))?;
+                Ok(Some(bytes))
+            }
+            None => Ok(None), // Tombstone record
+        }
+    }
+
+    fn to_connect_data(
+        &self,
+        _topic: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        // Simplified: Just deserialize bytes to JSON value
+        match value {
+            Some(bytes) => {
+                let v: Value = serde_json::from_slice(bytes)
+                    .map_err(|e| ConnectError::data(format!("Deserialization error: {}", e)))?;
+                Ok(SchemaAndValue::new(None, Some(v)))
+            }
+            None => Ok(SchemaAndValue::null()),
+        }
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        // Return an empty ConfigDef for the mock
+        static EMPTY_CONFIG_DEF: EmptyConfigDef = EmptyConfigDef;
+        &EMPTY_CONFIG_DEF
     }
 }
 
@@ -1209,5 +1354,85 @@ mod tests {
     fn test_default() {
         let plugins = Plugins::default();
         assert!(plugins.scan_result().is_empty());
+    }
+
+    #[test]
+    fn test_compare_and_swap_with_delegating_loader() {
+        let plugins = Plugins::new(HashMap::new());
+        let result = plugins.compare_and_swap_with_delegating_loader();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn test_new_internal_converter() {
+        let plugins = Plugins::new(HashMap::new());
+        let mut config = HashMap::new();
+        config.insert("key.serializer".to_string(), "StringSerializer".to_string());
+
+        let result = plugins.new_internal_converter(true, "MockConverter", config);
+        assert!(result.is_ok());
+
+        let converter = result.unwrap();
+        // Verify the converter was configured
+        assert!(converter.config.contains_key("key.serializer"));
+    }
+
+    #[test]
+    fn test_mock_converter_basic() {
+        let mut converter = MockConverter::new();
+        let mut config = HashMap::new();
+        config.insert(
+            "test.key".to_string(),
+            Value::String("test.value".to_string()),
+        );
+
+        converter.configure(config.clone(), true);
+        assert!(converter.config.contains_key("test.key"));
+        assert_eq!(converter.is_key, true);
+    }
+
+    #[test]
+    fn test_mock_converter_from_connect_data() {
+        let converter = MockConverter::new();
+        let value = Value::String("test data".to_string());
+
+        let result = converter.from_connect_data("test-topic", None, Some(&value));
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert!(bytes.is_some());
+
+        // Verify we can deserialize back
+        let bytes = bytes.unwrap();
+        let deserialized: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_mock_converter_to_connect_data() {
+        let converter = MockConverter::new();
+        let value = Value::String("test data".to_string());
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let result = converter.to_connect_data("test-topic", Some(&bytes));
+        assert!(result.is_ok());
+
+        let schema_and_value = result.unwrap();
+        assert_eq!(schema_and_value.value(), Some(&value));
+    }
+
+    #[test]
+    fn test_mock_converter_null_value() {
+        let converter = MockConverter::new();
+
+        // Test null input (tombstone)
+        let result = converter.from_connect_data("test-topic", None, None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        // Test null bytes
+        let result = converter.to_connect_data("test-topic", None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_null());
     }
 }

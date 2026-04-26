@@ -19,6 +19,7 @@
 
 pub mod admin;
 pub mod consumer_record;
+pub mod coordinator;
 pub mod isolation_level;
 pub mod kafka_consumer;
 pub mod kafka_producer;
@@ -29,6 +30,7 @@ pub mod record_metadata;
 
 pub use admin::*;
 pub use consumer_record::*;
+pub use coordinator::*;
 pub use isolation_level::*;
 pub use kafka_consumer::*;
 pub use kafka_producer::*;
@@ -36,3 +38,6 @@ pub use offset_and_metadata::*;
 pub use offset_commit_callback::*;
 pub use producer_record::*;
 pub use record_metadata::*;
+
+// Re-export OffsetSpec explicitly for clarity
+pub use admin::OffsetSpec;

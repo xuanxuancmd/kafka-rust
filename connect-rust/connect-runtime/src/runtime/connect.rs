@@ -20,7 +20,7 @@
 //!
 //! Corresponds to Java: `org.apache.kafka.connect.runtime.Connect`
 
-use log::{debug, error, info};
+use log::{debug, info};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,

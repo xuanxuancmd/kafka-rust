@@ -25,12 +25,11 @@ use common_trait::errors::ConfigException;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::config::worker_config::WorkerConfig;
 use crate::distributed::connect_protocol::ConnectProtocolCompatibility;
 use crate::distributed::crypto::{
-    system_crypto, Crypto, CryptoError, KeyGenerator, MacInstance, SystemCrypto,
+    system_crypto, Crypto, CryptoError, KeyGenerator,
 };
 
 // ============================================================================
@@ -439,6 +438,30 @@ impl DistributedConfig {
     /// Corresponds to Java: DistributedConfig(Map<String, String> props)
     pub fn new(props: HashMap<String, Value>) -> Result<Self, ConfigException> {
         Self::with_crypto(system_crypto(), props)
+    }
+
+    /// Creates a new DistributedConfig from a HashMap<String, String>.
+    ///
+    /// This convenience method converts String values to serde_json::Value
+    /// before passing to the main constructor.
+    ///
+    /// Corresponds to Java: DistributedConfig(Map<String, String> props)
+    pub fn from_string_map(props: HashMap<String, String>) -> Result<Self, ConfigException> {
+        let value_props: HashMap<String, Value> = props
+            .into_iter()
+            .map(|(k, v)| {
+                // Try to parse as number or boolean first, otherwise keep as string
+                let value = if let Ok(n) = v.parse::<i64>() {
+                    Value::Number(n.into())
+                } else if let Ok(b) = v.parse::<bool>() {
+                    Value::Bool(b)
+                } else {
+                    Value::String(v)
+                };
+                (k, value)
+            })
+            .collect();
+        Self::new(value_props)
     }
 
     /// Creates a new DistributedConfig with a custom Crypto implementation.
@@ -1130,6 +1153,20 @@ impl DistributedConfig {
     /// Returns all original configuration values.
     pub fn originals(&self) -> &HashMap<String, Value> {
         self.worker_config.originals()
+    }
+
+    /// Returns the Kafka cluster ID from configuration.
+    ///
+    /// This method delegates to WorkerConfig.kafka_cluster_id() which reads
+    /// the cluster ID from the configuration property "cluster.id".
+    ///
+    /// In the full Java implementation, this would dynamically fetch the cluster ID
+    /// by creating an Admin client and calling describeCluster().clusterId().
+    /// For simplicity, we read it from configuration.
+    ///
+    /// Corresponds to Java: DistributedConfig.kafkaClusterId() (inherited from WorkerConfig)
+    pub fn kafka_cluster_id(&self) -> Option<String> {
+        self.worker_config.kafka_cluster_id()
     }
 }
 

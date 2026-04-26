@@ -30,7 +30,7 @@ use crate::distributed::connect_protocol::{
     ConnectProtocolCompatibility, ConnectorTaskId, ASSIGNMENT_CONFIG_MISMATCH, ASSIGNMENT_NO_ERROR,
     CONNECT_PROTOCOL_V1, CONNECT_PROTOCOL_V2,
 };
-use crate::distributed::extended_assignment::{ExtendedAssignment, CONFIG_MISMATCH, NO_ERROR};
+use crate::distributed::extended_assignment::ExtendedAssignment;
 use crate::distributed::extended_worker_state::ExtendedWorkerState;
 use crate::distributed::incremental_cooperative_connect_protocol::IncrementalCooperativeConnectProtocol;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1276,7 +1276,7 @@ impl IncrementalCooperativeAssignor {
                 min_allocated_per_worker
             };
 
-            let mut revoked_from_worker: BTreeSet<E> = BTreeSet::new();
+            let revoked_from_worker: BTreeSet<E> = BTreeSet::new();
             result.insert(worker.worker().to_string(), revoked_from_worker.clone());
 
             let current_worker_allocation = worker_allocation(worker);

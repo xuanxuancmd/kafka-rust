@@ -21,7 +21,6 @@
 //!
 //! Corresponds to Java: org.apache.kafka.connect.runtime.isolation.DelegatingClassLoader
 
-use crate::isolation::plugin_class_loader::PluginClassLoader;
 use crate::isolation::plugin_desc::PluginDesc;
 use crate::isolation::plugin_scan_result::PluginScanResult;
 use crate::isolation::plugin_type::PluginType;

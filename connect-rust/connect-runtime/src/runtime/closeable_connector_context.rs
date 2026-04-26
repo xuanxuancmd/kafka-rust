@@ -22,7 +22,6 @@
 //! Corresponds to Java: `org.apache.kafka.connect.runtime.CloseableConnectorContext`
 
 use connect_api::connector::ConnectorContext;
-use connect_api::errors::ConnectError;
 
 /// A connector context that can be closed.
 ///
@@ -47,6 +46,7 @@ pub trait CloseableConnectorContext: ConnectorContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use connect_api::errors::ConnectError;
 
     /// A mock implementation for testing.
     struct MockCloseableConnectorContext {

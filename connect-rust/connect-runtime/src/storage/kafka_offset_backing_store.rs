@@ -28,7 +28,7 @@ use common_trait::storage::{GetFuture, OffsetBackingStore, SetFuture, WorkerConf
 use common_trait::util::time::{Time, SYSTEM};
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use log::{debug, error, info};
+use log::{debug, info};
 
 use super::kafka_topic_based_backing_store::{KafkaBasedLog, SendCompletionCallback, TopicAdmin, TopicDescription};
 

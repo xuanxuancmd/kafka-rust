@@ -81,7 +81,7 @@ impl std::fmt::Display for TransactionBoundary {
 /// This corresponds to `org.apache.kafka.connect.source.SourceTask` in Java.
 pub trait SourceTask: Task {
     /// Initializes this task with the given context.
-    fn initialize(&mut self, context: impl SourceTaskContext);
+    fn initialize(&mut self, context: Box<dyn SourceTaskContext>);
 
     /// Polls for new records.
     fn poll(&mut self) -> Result<Vec<SourceRecord>, ConnectError>;

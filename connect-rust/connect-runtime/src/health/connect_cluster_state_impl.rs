@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common_trait::herder::{Callback, ConnectorStateInfo, Herder, TaskStateInfo};
+use common_trait::herder::{ConnectorStateInfo, Herder, TaskStateInfo};
 use connect_api::errors::ConnectException;
 use connect_api::health::{
     AbstractState, ConnectorHealth, ConnectorState, ConnectorType, TaskState,

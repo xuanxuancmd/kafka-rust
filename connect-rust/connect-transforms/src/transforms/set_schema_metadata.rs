@@ -292,7 +292,7 @@ impl SetSchemaMetadata {
         &self,
         record: SourceRecord,
         updated_schema_name: Option<String>,
-        updated_schema_version: Option<i32>,
+        _updated_schema_version: Option<i32>,
     ) -> Result<Option<SourceRecord>, ConnectError> {
         // Get the operating value
         let operating_value = self.operating_value(&record);
@@ -301,31 +301,40 @@ impl SetSchemaMetadata {
         let updated_value = self.update_schema_in(
             operating_value,
             &updated_schema_name,
-            updated_schema_version,
+            _updated_schema_version,
         );
 
-        // Create the new schema string (in our implementation, schema is just a name string)
-        // The version is stored as part of the schema metadata in Java, but in our simplified
-        // implementation, we only store the schema name as a string
-        // Note: In future, schema version could be appended to schema name
-
         match self.target {
-            SetSchemaMetadataTarget::Key => Ok(Some(SourceRecord::new(
-                record.source_partition().clone(),
-                record.source_offset().clone(),
-                record.topic().to_string(),
-                record.kafka_partition(),
-                updated_value,
-                record.value().clone(),
-            ))),
-            SetSchemaMetadataTarget::Value => Ok(Some(SourceRecord::new(
-                record.source_partition().clone(),
-                record.source_offset().clone(),
-                record.topic().to_string(),
-                record.kafka_partition(),
-                record.key().cloned(),
-                updated_value.unwrap_or(Value::Null),
-            ))),
+            SetSchemaMetadataTarget::Key => {
+                let key_value = updated_value.clone();
+                let new_record = SourceRecord::new(
+                    record.source_partition().clone(),
+                    record.source_offset().clone(),
+                    record.topic().to_string(),
+                    record.kafka_partition(),
+                    key_value,
+                    record.value().clone(),
+                );
+                // Set the updated key schema
+                Ok(Some(
+                    new_record.with_key_and_schema(updated_value, updated_schema_name),
+                ))
+            }
+            SetSchemaMetadataTarget::Value => {
+                let value = updated_value.clone().unwrap_or(Value::Null);
+                let new_record = SourceRecord::new(
+                    record.source_partition().clone(),
+                    record.source_offset().clone(),
+                    record.topic().to_string(),
+                    record.kafka_partition(),
+                    record.key().cloned(),
+                    value.clone(),
+                );
+                // Set the updated value schema
+                Ok(Some(
+                    new_record.with_value_and_schema(value, updated_schema_name),
+                ))
+            }
         }
     }
 
@@ -381,6 +390,13 @@ impl SetSchemaMetadata {
         // If both value and schema are null, return the record unchanged
         // In Java: if (operatingValue == null && operatingSchema == null)
         if operating_value.is_none() && operating_schema.is_none() {
+            return Ok(Some(record));
+        }
+
+        // If value is null (None or Value::Null) and no schema exists, return unchanged
+        if (operating_value.is_none() || operating_value.unwrap().is_null())
+            && operating_schema.is_none()
+        {
             return Ok(Some(record));
         }
 
@@ -558,4 +574,3 @@ pub fn set_schema_metadata_key() -> SetSchemaMetadata {
 pub fn set_schema_metadata_value() -> SetSchemaMetadata {
     SetSchemaMetadata::new(SetSchemaMetadataTarget::Value)
 }
-

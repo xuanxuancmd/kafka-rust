@@ -15,12 +15,13 @@
 
 //! Basic types needed for storage backing store traits.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
 /// Unique ID for a single task.
 /// Includes a unique connector name and a task ID that is unique within the connector.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConnectorTaskId {
     pub connector: String,
     pub task: u32,
@@ -47,7 +48,7 @@ impl fmt::Display for ConnectorTaskId {
 }
 
 /// The state of a connector or task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum State {
     Unassigned,
     Running,
@@ -73,7 +74,7 @@ impl fmt::Display for State {
 }
 
 /// Target state for a connector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TargetState {
     Started,
     Stopped,
@@ -143,7 +144,7 @@ impl RestartRequest {
 }
 
 /// Status of a connector.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorStatus {
     pub id: String,
     pub state: State,
@@ -198,7 +199,7 @@ impl ConnectorStatus {
 }
 
 /// Status of a task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStatus {
     pub id: ConnectorTaskId,
     pub state: State,
@@ -253,7 +254,7 @@ impl TaskStatus {
 }
 
 /// Status of a topic used by a connector.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopicStatus {
     pub connector: String,
     pub topic: String,

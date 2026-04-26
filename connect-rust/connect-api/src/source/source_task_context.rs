@@ -23,5 +23,5 @@ pub trait SourceTaskContext {
     fn offset_storage_reader(&self) -> &dyn crate::storage::OffsetStorageReader;
 
     /// Returns the plugin metrics.
-    fn plugin_metrics(&self) -> Option<&dyn PluginMetrics>;
+    fn plugin_metrics(&self) -> Option<&(dyn PluginMetrics + Send + Sync)>;
 }

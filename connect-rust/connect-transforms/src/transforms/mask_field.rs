@@ -86,6 +86,9 @@ const FIELDS_CONFIG: &str = "fields";
 /// Configuration key for the mask type.
 const MASK_TYPE_CONFIG: &str = "type";
 
+/// Configuration key for custom replacement value.
+const REPLACEMENT_CONFIG: &str = "replacement";
+
 /// Configuration key for replace null with default.
 const REPLACE_NULL_CONFIG: &str = "replace.null.with.default";
 
@@ -150,6 +153,9 @@ pub struct MaskField {
     mask_type: MaskType,
     /// Whether to replace null values with default values.
     replace_null_with_default: bool,
+    /// Optional custom replacement value for masked fields.
+    /// When set, this overrides the mask_type behavior.
+    replacement: Option<Value>,
 }
 
 /// MaskFieldTarget enum representing Key or Value operation.
@@ -244,6 +250,7 @@ impl MaskField {
             masked_fields: HashSet::new(),
             mask_type: MaskType::Null,
             replace_null_with_default: DEFAULT_REPLACE_NULL,
+            replacement: None,
         }
     }
 
@@ -264,6 +271,7 @@ impl MaskField {
     /// The configuration includes:
     /// - `fields`: List of field names to mask (required)
     /// - `type`: Masking type - "null", "valid", or "base64" (default: "null")
+    /// - `replacement`: Optional custom replacement value for masked fields
     /// - `replace.null.with.default`: Whether to replace null with defaults (default: true)
     pub fn config_def() -> HashMap<String, ConfigKeyDef> {
         ConfigDefBuilder::new()
@@ -280,6 +288,13 @@ impl MaskField {
                 Some(Value::String(DEFAULT_MASK_TYPE.to_string())),
                 ConfigDefImportance::Medium,
                 "Type of masking to apply: \"null\" (type default), \"valid\" (schema default), or \"base64\" (Base64 encoding).",
+            )
+            .define(
+                REPLACEMENT_CONFIG,
+                ConfigDefType::String,
+                None,
+                ConfigDefImportance::Medium,
+                "Optional custom replacement value for masked fields. When set, this overrides the mask type.",
             )
             .define(
                 REPLACE_NULL_CONFIG,
@@ -328,6 +343,11 @@ impl MaskField {
     /// # Returns
     /// Returns the masked value.
     fn mask_value(&self, original_value: &Value, field_name: &str) -> Value {
+        // If a custom replacement is set, use it directly
+        if let Some(ref replacement) = self.replacement {
+            return replacement.clone();
+        }
+
         match self.mask_type {
             MaskType::Null => {
                 // Get the type-appropriate null value
@@ -564,12 +584,38 @@ impl Transformation<SourceRecord> for MaskField {
     ///
     /// * `fields` - List of field names to mask (required, JSON array of strings)
     /// * `type` - Masking type: "null", "valid", or "base64" (optional, default: "null")
+    /// * `replacement` - Optional custom replacement value (optional)
     /// * `replace.null.with.default` - Whether to replace null with defaults (optional, default: true)
     ///
     /// # Errors
     ///
     /// The configuration will fail if `fields` is not provided.
     fn configure(&mut self, configs: HashMap<String, Value>) {
+        // Get replacement value from original configs and parse it
+        if let Some(ref replacement_val) = configs.get(REPLACEMENT_CONFIG).cloned() {
+            // Try to parse the replacement as a proper JSON value
+            self.replacement = if let Value::String(s) = replacement_val {
+                // Try to parse string as number, boolean, or keep as string
+                if let Ok(n) = s.parse::<i64>() {
+                    Some(Value::Number(n.into()))
+                } else if let Ok(n) = s.parse::<f64>() {
+                    serde_json::Number::from_f64(n)
+                        .map(Value::Number)
+                        .or_else(|| Some(Value::String(s.clone())))
+                } else if s == "true" {
+                    Some(Value::Bool(true))
+                } else if s == "false" {
+                    Some(Value::Bool(false))
+                } else {
+                    Some(Value::String(s.clone()))
+                }
+            } else {
+                Some(replacement_val.clone())
+            };
+        } else {
+            self.replacement = None;
+        }
+
         let config_def = Self::config_def();
         let simple_config = SimpleConfig::new(config_def, configs)
             .expect("Failed to parse configuration for MaskField");
@@ -639,6 +685,7 @@ impl Transformation<SourceRecord> for MaskField {
         self.masked_fields.clear();
         self.mask_type = MaskType::Null;
         self.replace_null_with_default = DEFAULT_REPLACE_NULL;
+        self.replacement = None;
     }
 }
 
@@ -677,4 +724,3 @@ pub fn mask_field_key() -> MaskField {
 pub fn mask_field_value() -> MaskField {
     MaskField::new(MaskFieldTarget::Value)
 }
-
