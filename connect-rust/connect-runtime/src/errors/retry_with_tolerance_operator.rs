@@ -35,7 +35,10 @@ const RETRIES_DELAY_MIN_MS: u64 = 300;
 
 /// Operation is a callable that represents an operation to be executed.
 /// Returns a result or an error.
-pub type Operation<T> = Box<dyn FnOnce() -> Result<T, Box<dyn Error + Send + Sync>> + Send + Sync>;
+///
+/// Uses FnMut to allow multiple calls for retry semantics (corresponds to Java's Operation<V> interface
+/// where call() can be invoked repeatedly).
+pub type Operation<T> = Box<dyn FnMut() -> Result<T, Box<dyn Error + Send + Sync>> + Send + Sync>;
 
 /// RetryWithToleranceOperator executes operations with retry and tolerance logic.
 ///
@@ -165,35 +168,74 @@ impl RetryWithToleranceOperator {
     }
 
     /// Executes an operation with retry logic.
+    ///
+    /// Corresponds to Java's `execAndRetry` method which:
+    /// 1. Loops attempting the operation
+    /// 2. Retries on RetriableException if within deadline
+    /// 3. Implements exponential backoff between retries
+    /// 4. Returns null on stop request (setting error in context)
+    /// 5. Throws the exception if deadline exceeded
     fn exec_and_retry<T: Send + Sync>(
         &mut self,
         context: &mut ProcessingContext,
-        operation: Operation<T>,
+        mut operation: Operation<T>,
         deadline: Instant,
     ) -> Result<T, Box<dyn Error + Send + Sync>> {
+        // attempt counter is tracked via context.increment_attempts()
+        // Java: int attempt = 0; then attempt++ in loop; finally context.attempt(attempt)
+        // Rust equivalent: increment_attempts() at each loop iteration
+
         loop {
+            // Track attempt (equivalent to Java's finally block: context.attempt(attempt))
             context.increment_attempts();
 
-            // Execute the operation
-            // Since operation is FnOnce, we can only call it once, so we need to restructure
-            // For now, if it fails, we return the error and retry happens at higher level
-            // This is a simplified implementation
+            // Execute the operation (Java: operation.call())
+            let result = operation();
 
-            // Actually, we need to handle this differently since FnOnce can only be called once
-            // In Java, the Operation interface has a method that can be called repeatedly
-            // In Rust, we need to use a different approach
+            match result {
+                Ok(value) => {
+                    // Success - return result
+                    // Java: return operation.call() succeeds
+                    return Ok(value);
+                }
+                Err(error) => {
+                    // Check if it's a RetriableException (Java: catch (RetriableException e))
+                    let is_retriable = error.downcast_ref::<RetriableException>().is_some();
 
-            // For the retry mechanism, we need a operation that can be retried
-            // Let's modify the approach: the operation should be a factory that creates
-            // retryable operations
+                    if is_retriable {
+                        // Java: errorHandlingMetrics.recordFailure()
+                        self.metrics.record_failure();
 
-            break;
+                        // Check deadline (Java: if (time.milliseconds() < deadline))
+                        let current_time = Instant::now();
+                        if current_time < deadline {
+                            // Java: backoff(attempt, deadline); errorHandlingMetrics.recordRetry();
+                            self.backoff(context.attempts(), deadline);
+                            self.metrics.record_retry();
+
+                            // Check for stop request (Java: if (stopping))
+                            if self.is_stop_requested() {
+                                // Java: context.error(e); return null;
+                                context.set_error(error);
+                                // Return a special error to indicate stopped (null in Java)
+                                return Err(Box::new(ConnectException::new(
+                                    "Operation stopped due to shutdown request",
+                                )));
+                            }
+
+                            // Continue retry loop (Java: implicit continue in do-while)
+                            continue;
+                        } else {
+                            // Deadline exceeded (Java: throw e)
+                            return Err(error);
+                        }
+                    } else {
+                        // Non-retriable exception - rethrow (Java: implicit throw)
+                        return Err(error);
+                    }
+                }
+            }
         }
-
-        // This is placeholder - actual implementation needs different design
-        Err(Box::new(ConnectException::new(
-            "Operation execution not implemented",
-        )))
     }
 
     /// Executes an operation and handles any errors.

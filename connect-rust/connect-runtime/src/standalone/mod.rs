@@ -13,32 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Connect mirror module for Kafka Connect MirrorMaker.
+//! Standalone mode components for Kafka Connect.
+//!
+//! This module contains components specific to standalone mode operation,
+//! where all connectors and tasks run in a single process.
 
-pub mod checkpoint;
-pub mod checkpoint_store;
-pub mod config;
-pub mod filters;
-pub mod heartbeat;
-pub mod mirror_connector;
-pub mod mirror_herder;
-pub mod mirror_maker;
-pub mod mirror_maker_config;
-pub mod offset_sync;
-pub mod scheduler;
-pub mod source;
-pub mod util;
+mod health_check_thread;
 
-pub use checkpoint::*;
-pub use checkpoint_store::*;
-pub use config::*;
-pub use filters::*;
-pub use heartbeat::*;
-pub use mirror_connector::*;
-pub use mirror_herder::*;
-pub use mirror_maker::*;
-pub use mirror_maker_config::*;
-pub use offset_sync::*;
-pub use scheduler::*;
-pub use source::*;
-pub use util::*;
+pub use health_check_thread::*;

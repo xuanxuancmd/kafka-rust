@@ -129,43 +129,46 @@ impl DefaultConfigPropertyFilter {
 
     /// Simple pattern matching function.
     /// Supports basic regex patterns like .* and literal matches.
+    /// Properly handles escaped dots (\\.) which should match literal dots.
     fn matches_pattern(text: &str, pattern: &str) -> bool {
         // Handle exact match
         if pattern == text {
             return true;
         }
 
-        // Handle patterns with escaped dots (e.g., "follower\\.replication")
+        // First, unescape the pattern for comparison: replace \\.(escaped dot) with .
         let unescaped = pattern.replace("\\.", ".");
         if text == unescaped {
             return true;
         }
 
-        // Handle .* wildcard
-        if pattern.contains(".*") {
-            let parts: Vec<&str> = pattern.split(".*").collect();
-            if parts.len() == 2 {
-                let prefix = parts[0].replace("\\.", ".");
-                let suffix = parts[1].replace("\\.", ".");
+        // Check for .* wildcard pattern (after unescaping)
+        // The pattern "delete\\.retention\\.*" unescaped becomes "delete.retention.*"
+        if unescaped.contains(".*") {
+            let parts: Vec<&str> = unescaped.split(".*").collect();
+            if parts.len() >= 2 {
+                let prefix = parts[0];
+                let suffix = if parts.len() > 1 { parts[1] } else { "" };
+
                 if prefix.is_empty() && suffix.is_empty() {
                     return true;
                 }
                 if !prefix.is_empty() && !suffix.is_empty() {
-                    return text.starts_with(&prefix) && text.ends_with(&suffix);
+                    return text.starts_with(prefix) && text.ends_with(suffix);
                 }
                 if !prefix.is_empty() {
-                    return text.starts_with(&prefix);
+                    return text.starts_with(prefix);
                 }
                 if !suffix.is_empty() {
-                    return text.ends_with(&suffix);
+                    return text.ends_with(suffix);
                 }
             }
         }
 
         // Handle wildcard at end (prefix match)
-        if pattern.ends_with(".*") {
-            let prefix = pattern[..pattern.len() - 2].replace("\\.", ".");
-            return text.starts_with(&prefix);
+        if unescaped.ends_with(".*") {
+            let prefix = &unescaped[..unescaped.len() - 2];
+            return text.starts_with(prefix);
         }
 
         false

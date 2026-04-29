@@ -144,6 +144,20 @@ impl ErrorHandlingMetrics {
         self.last_error_timestamp.store(now, Ordering::Relaxed);
     }
 
+    /// Increments the number of failed operations (retriable and non-retriable).
+    /// Corresponds to Java: `recordFailure()` in ErrorHandlingMetrics.
+    /// This is called when a RetriableException is caught during retry loop.
+    pub fn record_failure(&self) {
+        self.total_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increments the number of retries made while executing operations.
+    /// Corresponds to Java: `recordRetry()` in ErrorHandlingMetrics.
+    /// This is called after each backoff before retry attempt.
+    pub fn record_retry(&self) {
+        self.retried_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Returns the total number of errors encountered.
     pub fn total_errors(&self) -> u64 {
         self.total_errors.load(Ordering::Relaxed)

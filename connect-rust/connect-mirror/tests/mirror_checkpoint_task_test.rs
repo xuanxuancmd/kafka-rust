@@ -281,7 +281,7 @@ fn test_checkpoint_record_creation() {
         Some(&json!("consumer-group-1"))
     );
     assert_eq!(source_partition.get("topic"), Some(&json!("source-topic")));
-    assert_eq!(source_partition.get("partition"), Some(&json!("0")));
+    assert_eq!(source_partition.get("partition"), Some(&json!(0)));
 
     // Verify source offset contains downstream offset
     let source_offset = source_record.source_offset();

@@ -46,9 +46,9 @@ https://codex.ysaikeji.cn/console/personal?tab=points
 我当前正在kafka的connect/runtime目录下代码到connect/connect-runtime的代码的rust翻译过程，保证代码1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，对于完整性不足或功能问题输出详细补齐计划。比如完整性可展示kafka connect/runtime中Java代码类个数、代码行数，以及connect-rust/connect-runtime的struct\trait的个数、代码行数，展示迁移的完整性。比如正确性，可展示kafka原模块的@Test用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译结果和ut运行结果，编译结果和ut运行结果要举证，不能只告诉我结果。
 ```
 
-当前已完成kafka的connect/runtime目录下代码到connect/connect-runtime的代码的rust翻译过程，但需要检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，请检查不满足条件的点，若简单请直接修改，如果差异较大应该先制定plan再实施。额外要求：
+当前已完成kafka的connect/mirror目录下代码到connect/connect-mirror的代码的rust翻译过程，但需要检查代码是否1:1翻译，要求代码目录、类名、函数名一致、迁移后代码完整不遗漏，且功能正确，请检查不满足条件的点，若简单请直接修改，如果差异较大应该先制定plan再实施。额外要求：
 1.connect-rust内rust代码的测试代码在tests目录下，不要和源码放在一起。
-2.完整性指：kafka connect/runtime中Java代码类个数、代码量，以及connect-rust/connect-runtime的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏。
+2.完整性指：kafka connect/mirror中Java代码类个数、代码量，以及connect-rust/connect-mirror的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏。
 3.正确性指：kafka原模块的\@Test用例数量和迁移后的rust代码测试用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译和ut运行成功的结果
 4.分析维度要细致，最终展示结果也要细致，包含源码目录、类的一致性比对，函数、代码量的完整新比对，以及测试用例数量、编译运行结果的比对，缺一不可。
 
@@ -77,7 +77,7 @@ https://codex.ysaikeji.cn/console/personal?tab=points
 6.上述步骤有依赖关系，同时上述每条方案都需要让我检视。同时你应该重点思考如何确保代码生成阶段实施后，即本次修复后，代码迁移不遗漏，功能正常。
 
 
-我正在用rust重写kafka的connect/runtime模块代码，重写至connect-rust/connect-runtime目录下，这个模块代码量较大，当前已经完成4批次的迁移了，但代码仍缺失且功能不正确。你可以阅读之前的设计文档理解迁移的要求`plans/connect-runtime-*.md`，然后从源码一致性、完整性、测试完整性、编译与ut运行结果、test-plugin测试结果角度度量项目迁移现状，如有缺失或问题，同时制定新的代码修复计划。总结就是先分析并展示迁移现状，然后再生成修复计划。
+我正在用rust重写kafka的connect/runtime模块代码，重写至connect-rust/connect-runtime目录下，这个模块代码量较大，当前已经完成多批次的迁移了，但感觉代码仍有缺失或功能不正确。你可以阅读之前的设计文档理解迁移的要求`plans/connect-runtime-*.md`，然后从源码一致性、完整性、测试完整性、编译与ut运行结果、test-plugins测试结果(test-plugins负责验证runtime模块功能)等角度度量项目迁移现状，如有缺失或问题，同时制定新的代码修复计划。你需要先分析并展示迁移现状，然后再生成修复计划。
 度量方式：
 1.完整性指：kafka connect/runtime中Java代码类个数、代码量，以及connect-rust/connect-runtime的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏，目录、类、函数命名一致。
 2.正确性指：kafka原模块的\@Test用例数量和迁移后的rust代码测试用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译和ut、test-plugins测试的结果。
@@ -87,3 +87,15 @@ https://codex.ysaikeji.cn/console/personal?tab=points
 3.分析connect/runtime对于connect外部其他模块的依赖，如果有缺失请一并在common-trait中补充，需要保证API严格一致；如果是对kafka-client有依赖，可以在kafka-client-mock中实现（kafka-client-mocks是内存版的mock实现)，同样，需要保证API严格一致。如果是对connect/内的runtime之外模块有依赖，比如api模块，同理应该分析是否依赖均已经存在，不存在则在对应connect-rust的相应模块下补齐代码。总之，这几部分代码当前已经存在，你需要查缺补漏。分析后提交我审阅。
 4.迁移kafka的connect/runtime模块内的ut，ut需要保证测试场景不遗漏，也就是所有\@Test用例都不缺失，但不必逐行翻译，需保证运行通过。
 5.test-plugins在kafka中负责验证runtime模块功能，rust中通过编译期宏方式集成，如有问题test-plugins也应一并修复。
+
+
+我正在用rust重写kafka的connect/mirror模块代码，重写至connect-rust/connect-mirror目录下，当前已经完成多批次的迁移了，但代码仍有缺失或功能不正确。你可以阅读之前的设计文档理解迁移的要求`plans/mirror-module-implementation-plan.md`，然后从源码一致性、完整性、测试完整性、编译与ut运行结果、e2e集成测试结等角度度量项目迁移现状，如有缺失或问题，同时制定新的代码修复计划。你需要先分析并展示迁移现状，然后再生成修复计划。
+度量方式：
+1.完整性指：kafka connect/runtime中Java代码类个数、代码量，以及connect-rust/connect-mirror的struct\trait的个数、代码量大致相同或rust代码更多（测试代码不在其内），你可以考虑其他维度证明代码迁移无遗漏，目录、类、函数命名一致。
+2.正确性指：kafka原模块的\@Test用例数量和迁移后的rust代码测试用例数量相同，或rust测试用例更多，无虚假用例（假断言等），以及编译和ut、test-plugins测试的结果。
+修复时注意事项：
+1.应该优先分析connect/mirror和connect-rust/connect-mirror的代码差异，按照1：1方式迁移，进行函数级比对，确保函数不遗漏，函数实现正常无todo等空实现，分析后提交我审阅。
+2.同时还应该分析connect/mirror从java语言迁移到rust语言的技术难点的迁移方案，这部分在之前的plan中已经存在，可以继承。
+3.分析connect/mirror对于connect外部其他模块的依赖，如果有缺失请一并在common-trait中补充，需要保证API严格一致；如果是对kafka-client有依赖，可以在kafka-client-mock中实现（kafka-client-mocks是内存版的mock实现)，同样，需要保证API严格一致。如果是对connect/内的mirror之外模块有依赖，比如api模块，同理应该分析是否依赖均已经存在，不存在则在对应connect-rust的相应模块下补齐代码。总之，这几部分代码当前已经存在，你需要查缺补漏。分析后提交我审阅。
+4.迁移kafka的connect/mirror模块内的ut，ut需要保证测试场景不遗漏，也就是所有\@Test用例都不缺失，但不必逐行翻译，需保证运行通过。
+5.重点审视e2e的测试用例，是否等等实现，及运行结果。

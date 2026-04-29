@@ -137,7 +137,7 @@ impl MirrorHeartbeatTask {
     /// The SourceRecord is sent to the heartbeats topic.
     ///
     /// Corresponds to Java: MirrorHeartbeatTask.heartbeatRecord()
-    fn heartbeat_record(&self, heartbeat: &Heartbeat) -> Result<SourceRecord, SchemaError> {
+    pub fn heartbeat_record(&self, heartbeat: &Heartbeat) -> Result<SourceRecord, SchemaError> {
         // Build source partition from heartbeat's connect partition
         let connect_partition = heartbeat.connect_partition();
         let source_partition: HashMap<String, Value> = connect_partition
@@ -170,7 +170,7 @@ impl MirrorHeartbeatTask {
     }
 
     /// Creates a Heartbeat with current timestamp.
-    fn create_heartbeat(&self) -> Heartbeat {
+    pub fn create_heartbeat(&self) -> Heartbeat {
         Heartbeat::new(
             self.source_cluster_alias.clone(),
             self.target_cluster_alias.clone(),
@@ -179,6 +179,31 @@ impl MirrorHeartbeatTask {
                 .unwrap_or_default()
                 .as_millis() as i64,
         )
+    }
+
+    // ============================================================================
+    // Test Helper Methods
+    // ============================================================================
+
+    /// Returns true if task has a context.
+    pub fn has_context(&self) -> bool {
+        self.context.is_some()
+    }
+
+    /// Returns true if task is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Returns true if task is stopping.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping
+    }
+
+    /// Sets last emit time to past for testing poll behavior.
+    /// This simulates the condition where interval has elapsed.
+    pub fn set_last_emit_time_to_past(&mut self) {
+        self.last_emit_time = Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
     }
 }
 

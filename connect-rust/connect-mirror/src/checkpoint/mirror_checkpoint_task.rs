@@ -338,11 +338,16 @@ impl MirrorCheckpointTask {
     /// Corresponds to Java: MirrorCheckpointTask.checkpointRecord()
     pub fn checkpoint_record(&self, checkpoint: &Checkpoint) -> Result<SourceRecord, SchemaError> {
         // Build source partition from checkpoint's connect partition
-        let source_partition: HashMap<String, Value> = checkpoint
-            .connect_partition()
-            .into_iter()
-            .map(|(k, v)| (k, json!(v)))
-            .collect();
+        // Note: partition must be serialized as Number (i32), not String
+        let mut source_partition: HashMap<String, Value> = HashMap::new();
+        for (k, v) in checkpoint.connect_partition() {
+            if k == "partition" {
+                // Parse partition string to i32 for correct JSON serialization
+                source_partition.insert(k, json!(v.parse::<i32>().unwrap_or(0)));
+            } else {
+                source_partition.insert(k, json!(v));
+            }
+        }
 
         // Build source offset - we use downstream offset as the source offset
         let source_offset: HashMap<String, Value> = HashMap::from([
@@ -549,11 +554,6 @@ impl SourceTaskTrait for MirrorCheckpointTask {
                 // Interval not elapsed, return empty
                 return Ok(Vec::new());
             }
-        }
-
-        // Check if checkpoint emission is enabled
-        if self.emit_interval.is_zero() {
-            return Ok(Vec::new());
         }
 
         // Collect all checkpoint records from assigned consumer groups

@@ -18,8 +18,8 @@
 //! The Herder is the coordinator that manages connectors and tasks,
 //! bridging between the REST API and the Worker.
 
-mod distributed_herder;
-mod standalone_herder;
+pub mod distributed_herder;
+pub mod standalone_herder;
 
 pub use distributed_herder::*;
 pub use standalone_herder::*;

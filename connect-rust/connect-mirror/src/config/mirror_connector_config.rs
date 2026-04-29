@@ -63,6 +63,10 @@ pub const ADMIN_TASK_TIMEOUT_MILLIS_CONFIG: &str = "admin.task.timeout.millis";
 /// Corresponds to Java: MirrorConnectorConfig.ADMIN_TASK_TIMEOUT_MILLIS_DEFAULT
 pub const ADMIN_TASK_TIMEOUT_MILLIS_DEFAULT: i64 = 60_000;
 
+/// Configuration key for enabled flag.
+/// Corresponds to Java: MirrorConnectorConfig.ENABLED
+pub const ENABLED_CONFIG: &str = "enabled";
+
 /// Configuration key for emit offset syncs enabled.
 /// Corresponds to Java: MirrorConnectorConfig.EMIT_OFFSET_SYNCS_ENABLED
 pub const EMIT_OFFSET_SYNCS_ENABLED_CONFIG: &str = "emit.offset.syncs.enabled";
