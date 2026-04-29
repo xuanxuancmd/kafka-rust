@@ -1,311 +1,2240 @@
-//! Mock Admin Client Implementation
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Mock implementation of Kafka Admin client.
 //!
-//! This module provides a mock implementation of KafkaAdmin for testing purposes.
+//! This corresponds to `org.apache.kafka.clients.admin.Admin` in Java.
+//! Provides an in-memory mock for testing purposes with support for:
+//! - Topic management: create, delete, list topics
+//! - Consumer group offset management: list, alter, delete offsets
 
-use common_trait::admin::{
-    KafkaAdmin, NewTopic, TopicDescription, PartitionMetadata, Node, ClusterDescription,
-    ConsumerGroupDescription, MemberDescription,
-};
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
+use common_trait::{AdminClient, ConnectError, TopicPartition};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-/// Mock admin client for testing Kafka admin functionality.
-pub struct MockAdminClient {
-    /// In-memory storage for topics
-    topics: Arc<Mutex<HashMap<String, MockTopicInfo>>>,
-    /// Whether the client is closed
-    closed: Arc<Mutex<bool>>,
-}
+use crate::OffsetAndMetadata;
 
-/// Mock topic information
+/// Topic configuration for creating new topics.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.NewTopic` in Java.
 #[derive(Debug, Clone)]
-pub struct MockTopicInfo {
-    pub name: String,
-    pub num_partitions: i32,
-    pub replication_factor: i16,
-    pub config: HashMap<String, String>,
+pub struct NewTopic {
+    name: String,
+    num_partitions: i32,
+    replication_factor: i32,
+    configs: HashMap<String, String>,
 }
 
-impl MockAdminClient {
-    /// Create a new mock admin client
-    pub fn new() -> Self {
-        MockAdminClient {
-            topics: Arc::new(Mutex::new(HashMap::new())),
-            closed: Arc::new(Mutex::new(false)),
+impl NewTopic {
+    /// Creates a new topic specification with the given name, partitions, and replication factor.
+    pub fn new(name: impl Into<String>, num_partitions: i32, replication_factor: i32) -> Self {
+        NewTopic {
+            name: name.into(),
+            num_partitions,
+            replication_factor,
+            configs: HashMap::new(),
         }
     }
 
-    /// Add a topic to the mock
-    pub fn add_topic(&self, topic: MockTopicInfo) {
-        let mut topics = self.topics.lock().unwrap();
-        topics.insert(topic.name.clone(), topic);
+    /// Creates a new topic with the given name and specific partition assignment.
+    pub fn with_partitions(name: impl Into<String>, partitions: Vec<Vec<i32>>) -> Self {
+        NewTopic {
+            name: name.into(),
+            num_partitions: partitions.len() as i32,
+            replication_factor: -1,
+            configs: HashMap::new(),
+        }
     }
 
-    /// Get all topics
-    pub fn get_topics(&self) -> HashMap<String, MockTopicInfo> {
-        let topics = self.topics.lock().unwrap();
-        topics.clone()
+    /// Adds a configuration for the topic.
+    pub fn config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.configs.insert(key.into(), value.into());
+        self
     }
 
-    /// Clear all topics
-    pub fn clear_topics(&self) {
-        let mut topics = self.topics.lock().unwrap();
-        topics.clear();
+    /// Returns the topic name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the number of partitions.
+    pub fn num_partitions(&self) -> i32 {
+        self.num_partitions
+    }
+
+    /// Returns the replication factor.
+    pub fn replication_factor(&self) -> i32 {
+        self.replication_factor
+    }
+
+    /// Returns the topic configurations.
+    pub fn configs(&self) -> &HashMap<String, String> {
+        &self.configs
     }
 }
 
-impl Default for MockAdminClient {
-    fn default() -> Self {
-        Self::new()
+/// Metadata for a created topic.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.TopicMetadataAndConfig` in Java.
+#[derive(Debug, Clone)]
+pub struct TopicMetadata {
+    name: String,
+    num_partitions: i32,
+    replication_factor: i32,
+    configs: HashMap<String, String>,
+    partition_metadata: Vec<PartitionMetadata>,
+}
+
+impl TopicMetadata {
+    /// Returns the topic name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the number of partitions.
+    pub fn num_partitions(&self) -> i32 {
+        self.num_partitions
+    }
+
+    /// Returns the replication factor.
+    pub fn replication_factor(&self) -> i32 {
+        self.replication_factor
+    }
+
+    /// Returns the topic configurations.
+    pub fn configs(&self) -> &HashMap<String, String> {
+        &self.configs
+    }
+
+    /// Returns the partition metadata.
+    pub fn partition_metadata(&self) -> &Vec<PartitionMetadata> {
+        &self.partition_metadata
     }
 }
 
-impl KafkaAdmin for MockAdminClient {
-    fn create_topics(
-        &self,
-        new_topics: Vec<NewTopic>,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>> {
-        let topics = self.topics.clone();
-        let closed = self.closed.clone();
+/// Metadata for a partition.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.PartitionMetadata` in Java.
+#[derive(Debug, Clone)]
+pub struct PartitionMetadata {
+    partition: i32,
+    leader: i32,
+    replicas: Vec<i32>,
+    isr: Vec<i32>,
+}
 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
-
-            let mut results = HashMap::new();
-            let mut all_topics = topics.lock().unwrap();
-
-            for new_topic in new_topics {
-                if all_topics.contains_key(&new_topic.name) {
-                    results.insert(new_topic.name.clone(), format!("Topic '{}' already exists", new_topic.name));
-                    continue;
-                }
-
-                let topic_info = MockTopicInfo {
-                    name: new_topic.name.clone(),
-                    num_partitions: new_topic.num_partitions,
-                    replication_factor: new_topic.replication_factor,
-                    config: new_topic.configs,
-                };
-
-                all_topics.insert(new_topic.name.clone(), topic_info);
-                results.insert(new_topic.name.clone(), "Success".to_string());
-            }
-
-            Ok(results)
-        })
+impl PartitionMetadata {
+    /// Returns the partition number.
+    pub fn partition(&self) -> i32 {
+        self.partition
     }
 
-    fn delete_topics(
-        &self,
-        topic_names: Vec<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>> {
-        let topics = self.topics.clone();
-        let closed = self.closed.clone();
-
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
-
-            let mut results = HashMap::new();
-            let mut all_topics = topics.lock().unwrap();
-
-            for topic_name in topic_names {
-                if !all_topics.contains_key(&topic_name) {
-                    results.insert(topic_name.clone(), format!("Topic '{}' does not exist", topic_name));
-                    continue;
-                }
-
-                all_topics.remove(&topic_name);
-                results.insert(topic_name.clone(), "Success".to_string());
-            }
-
-            Ok(results)
-        })
+    /// Returns the leader broker ID.
+    pub fn leader(&self) -> i32 {
+        self.leader
     }
 
-    fn describe_topics(
-        &self,
-        topic_names: Vec<String>,
-    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, TopicDescription>, String>> + Send>> {
-        let topics = self.topics.clone();
-        let closed = self.closed.clone();
-
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
-
-            let mut results = HashMap::new();
-            let all_topics = topics.lock().unwrap();
-
-            for topic_name in topic_names {
-                if let Some(_topic_info) = all_topics.get(&topic_name) {
-                    let description = TopicDescription {
-                        name: topic_name.clone(),
-                        internal: false,
-                        partitions: vec![PartitionMetadata {
-                            topic: topic_name.clone(),
-                            partition: 0,
-                            leader: Some(Node {
-                                id: 0,
-                                host: "localhost".to_string(),
-                                port: 9092,
-                                rack: None,
-                            }),
-                            replicas: vec![Node {
-                                id: 0,
-                                host: "localhost".to_string(),
-                                port: 9092,
-                                rack: None,
-                            }],
-                            in_sync_replicas: vec![Node {
-                                id: 0,
-                                host: "localhost".to_string(),
-                                port: 9092,
-                                rack: None,
-                            }],
-                            offline_replicas: vec![],
-                        }],
-                        authorized_operations: vec!["READ".to_string(), "WRITE".to_string()],
-                    };
-                    results.insert(topic_name.clone(), description);
-                }
-            }
-
-            Ok(results)
-        })
+    /// Returns the replica broker IDs.
+    pub fn replicas(&self) -> &Vec<i32> {
+        &self.replicas
     }
 
-    fn list_topics(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send>> {
-        let topics = self.topics.clone();
-        let closed = self.closed.clone();
+    /// Returns the in-sync replica broker IDs.
+    pub fn isr(&self) -> &Vec<i32> {
+        &self.isr
+    }
+}
 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
+/// Result of topic listing operation.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.TopicListing` in Java.
+#[derive(Debug, Clone)]
+pub struct TopicListing {
+    name: String,
+    is_internal: bool,
+}
 
-            let all_topics = topics.lock().unwrap();
-            Ok(all_topics.keys().cloned().collect())
-        })
+impl TopicListing {
+    /// Creates a new topic listing.
+    pub fn new(name: impl Into<String>, is_internal: bool) -> Self {
+        TopicListing {
+            name: name.into(),
+            is_internal,
+        }
     }
 
-    fn describe_cluster(&self) -> Pin<Box<dyn Future<Output = Result<ClusterDescription, String>> + Send>> {
-        let closed = self.closed.clone();
+    /// Returns the topic name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
+    /// Returns whether the topic is internal.
+    pub fn is_internal(&self) -> bool {
+        self.is_internal
+    }
+}
+
+/// Specification for which offset to list.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.OffsetSpec` in Java.
+#[derive(Debug, Clone, Copy)]
+pub enum OffsetSpec {
+    /// List the earliest offset.
+    Earliest,
+    /// List the latest offset.
+    Latest,
+    /// List the offset at a specific timestamp.
+    Timestamp(i64),
+}
+
+/// Error for topic operations.
+///
+/// This corresponds to various topic-related exceptions in Java.
+#[derive(Debug, Clone)]
+pub enum TopicError {
+    /// Topic already exists.
+    AlreadyExists { topic: String },
+    /// Topic does not exist.
+    DoesNotExist { topic: String },
+    /// Invalid topic configuration.
+    InvalidConfig { topic: String, message: String },
+    /// Operation failed.
+    Failed { topic: String, message: String },
+    /// Invalid replication factor.
+    InvalidReplicationFactor { topic: String, message: String },
+    /// Timeout during operation.
+    Timeout { topic: String, message: String },
+    /// Authorization failed.
+    Authorization { topic: String, message: String },
+    /// Unsupported version.
+    UnsupportedVersion { topic: String, message: String },
+    /// Leader not available.
+    LeaderNotAvailable { topic: String, message: String },
+}
+
+impl std::fmt::Display for TopicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TopicError::AlreadyExists { topic } => {
+                write!(f, "Topic '{}' already exists", topic)
             }
+            TopicError::DoesNotExist { topic } => {
+                write!(f, "Topic '{}' does not exist", topic)
+            }
+            TopicError::InvalidConfig { topic, message } => {
+                write!(f, "Invalid config for topic '{}': {}", topic, message)
+            }
+            TopicError::Failed { topic, message } => {
+                write!(f, "Operation failed for topic '{}': {}", topic, message)
+            }
+            TopicError::InvalidReplicationFactor { topic, message } => {
+                write!(
+                    f,
+                    "Invalid replication factor for topic '{}': {}",
+                    topic, message
+                )
+            }
+            TopicError::Timeout { topic, message } => {
+                write!(f, "Timeout for topic '{}': {}", topic, message)
+            }
+            TopicError::Authorization { topic, message } => {
+                write!(f, "Authorization failed for topic '{}': {}", topic, message)
+            }
+            TopicError::UnsupportedVersion { topic, message } => {
+                write!(f, "Unsupported version for topic '{}': {}", topic, message)
+            }
+            TopicError::LeaderNotAvailable { topic, message } => {
+                write!(f, "Leader not available for topic '{}': {}", topic, message)
+            }
+        }
+    }
+}
 
-            Ok(ClusterDescription {
-                cluster_id: "mock-cluster".to_string(),
-                controller: Some(Node {
-                    id: 0,
-                    host: "localhost".to_string(),
-                    port: 9092,
-                    rack: None,
-                }),
-                nodes: vec![Node {
-                    id: 0,
-                    host: "localhost".to_string(),
-                    port: 9092,
-                    rack: None,
-                }],
-                authorized_operations: vec!["ALL".to_string()],
+impl std::error::Error for TopicError {}
+
+/// Error for consumer group operations.
+///
+/// This corresponds to various consumer group exceptions in Java.
+#[derive(Debug, Clone)]
+pub enum ConsumerGroupError {
+    /// Consumer group does not exist.
+    DoesNotExist { group_id: String },
+    /// Consumer group is not empty (has active members).
+    NotEmpty { group_id: String },
+    /// Invalid offset.
+    InvalidOffset { group_id: String, message: String },
+    /// Operation failed.
+    Failed { group_id: String, message: String },
+}
+
+impl std::fmt::Display for ConsumerGroupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConsumerGroupError::DoesNotExist { group_id } => {
+                write!(f, "Consumer group '{}' does not exist", group_id)
+            }
+            ConsumerGroupError::NotEmpty { group_id } => {
+                write!(f, "Consumer group '{}' is not empty", group_id)
+            }
+            ConsumerGroupError::InvalidOffset { group_id, message } => {
+                write!(f, "Invalid offset for group '{}': {}", group_id, message)
+            }
+            ConsumerGroupError::Failed { group_id, message } => {
+                write!(f, "Operation failed for group '{}': {}", group_id, message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConsumerGroupError {}
+
+/// Error for configuration operations.
+///
+/// This corresponds to various configuration-related exceptions in Java.
+#[derive(Debug, Clone)]
+pub enum ConfigError {
+    /// Resource does not exist.
+    DoesNotExist { resource: String, message: String },
+    /// Invalid configuration value.
+    InvalidValue {
+        resource: String,
+        key: String,
+        message: String,
+    },
+    /// Operation failed.
+    Failed { resource: String, message: String },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::DoesNotExist { resource, message } => {
+                write!(f, "Resource '{}' does not exist: {}", resource, message)
+            }
+            ConfigError::InvalidValue {
+                resource,
+                key,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Invalid value for config '{}' on resource '{}': {}",
+                    key, resource, message
+                )
+            }
+            ConfigError::Failed { resource, message } => {
+                write!(
+                    f,
+                    "Operation failed for resource '{}': {}",
+                    resource, message
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Resource type for configuration operations.
+///
+/// This corresponds to `org.apache.kafka.common.config.ConfigResource.Type` in Java.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConfigResourceType {
+    /// Broker resource.
+    Broker,
+    /// Topic resource.
+    Topic,
+}
+
+/// Resource identifier for configuration operations.
+///
+/// This corresponds to `org.apache.kafka.common.config.ConfigResource` in Java.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConfigResource {
+    /// The resource type.
+    type_: ConfigResourceType,
+    /// The resource name (topic name or broker ID).
+    name: String,
+}
+
+impl ConfigResource {
+    /// Creates a new config resource.
+    pub fn new(type_: ConfigResourceType, name: impl Into<String>) -> Self {
+        ConfigResource {
+            type_,
+            name: name.into(),
+        }
+    }
+
+    /// Returns the resource type.
+    pub fn type_(&self) -> ConfigResourceType {
+        self.type_
+    }
+
+    /// Returns the resource name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Operation type for incremental config modification.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.AlterConfigOp.OpType` in Java.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlterConfigOpType {
+    /// Set the value (replaces current value).
+    Set,
+    /// Delete the config (reverts to default).
+    Delete,
+    /// Append to list-type config.
+    Append,
+    /// Subtract from list-type config.
+    Subtract,
+}
+
+/// A single configuration modification operation.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.AlterConfigOp` in Java.
+#[derive(Debug, Clone)]
+pub struct AlterConfigOp {
+    /// The configuration key name.
+    key: String,
+    /// The configuration value.
+    value: String,
+    /// The operation type.
+    op_type: AlterConfigOpType,
+}
+
+impl AlterConfigOp {
+    /// Creates a new alter config operation.
+    pub fn new(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        op_type: AlterConfigOpType,
+    ) -> Self {
+        AlterConfigOp {
+            key: key.into(),
+            value: value.into(),
+            op_type,
+        }
+    }
+
+    /// Creates a SET operation.
+    pub fn set(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Set)
+    }
+
+    /// Creates a DELETE operation.
+    pub fn delete(key: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, "", AlterConfigOpType::Delete)
+    }
+
+    /// Creates an APPEND operation.
+    pub fn append(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Append)
+    }
+
+    /// Creates a SUBTRACT operation.
+    pub fn subtract(key: impl Into<String>, value: impl Into<String>) -> Self {
+        AlterConfigOp::new(key, value, AlterConfigOpType::Subtract)
+    }
+
+    /// Returns the configuration key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the configuration value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Returns the operation type.
+    pub fn op_type(&self) -> AlterConfigOpType {
+        self.op_type
+    }
+}
+
+/// Internal topic information stored in the mock.
+#[derive(Debug, Clone)]
+struct InternalTopic {
+    name: String,
+    num_partitions: i32,
+    replication_factor: i32,
+    configs: HashMap<String, String>,
+    is_internal: bool,
+}
+
+impl InternalTopic {
+    fn from_new_topic(new_topic: &NewTopic, is_internal: bool) -> Self {
+        InternalTopic {
+            name: new_topic.name.clone(),
+            num_partitions: new_topic.num_partitions,
+            replication_factor: new_topic.replication_factor,
+            configs: new_topic.configs.clone(),
+            is_internal,
+        }
+    }
+
+    fn to_metadata(&self) -> TopicMetadata {
+        let partition_metadata: Vec<PartitionMetadata> = (0..self.num_partitions)
+            .map(|p| PartitionMetadata {
+                partition: p,
+                leader: 0,
+                replicas: vec![0, 1, 2],
+                isr: vec![0, 1],
             })
-        })
+            .collect();
+
+        TopicMetadata {
+            name: self.name.clone(),
+            num_partitions: self.num_partitions,
+            replication_factor: self.replication_factor,
+            configs: self.configs.clone(),
+            partition_metadata,
+        }
     }
 
-    fn list_consumer_groups(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send>> {
-        let closed = self.closed.clone();
- 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
- 
-            // Mock returns empty list
-            Ok(Vec::new())
-        })
+    fn to_listing(&self) -> TopicListing {
+        TopicListing::new(&self.name, self.is_internal)
     }
- 
-    fn describe_consumer_group(
+}
+
+/// Internal consumer group offset information.
+type GroupOffsets = HashMap<TopicPartition, OffsetAndMetadata>;
+
+/// Mock Admin client for testing purposes.
+///
+/// This provides an in-memory implementation of the Kafka Admin client
+/// that supports topic management and consumer group offset operations.
+/// All operations are synchronous and stored in memory.
+///
+/// Thread-safe via internal `Arc<Mutex<...>` wrapper.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.KafkaAdminClient` in Java.
+pub struct MockAdmin {
+    topics: Arc<Mutex<HashMap<String, InternalTopic>>>,
+    consumer_group_offsets: Arc<Mutex<HashMap<String, GroupOffsets>>>,
+}
+
+impl MockAdmin {
+    /// Creates a new MockAdmin with empty state.
+    pub fn new() -> Self {
+        MockAdmin {
+            topics: Arc::new(Mutex::new(HashMap::new())),
+            consumer_group_offsets: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Creates a new MockAdmin with pre-existing topics.
+    pub fn with_topics(topics: Vec<NewTopic>) -> Self {
+        let mut admin = MockAdmin::new();
+        let result = admin.create_topics(topics);
+        if result.failed_count() > 0 {
+            panic!("Failed to create initial topics: {:?}", result.errors());
+        }
+        admin
+    }
+
+    // ===== Topic Management =====
+
+    /// Creates new topics.
+    ///
+    /// This corresponds to `Admin.createTopics()` in Java.
+    /// Returns a `CreateTopicsResult` containing the results for each topic.
+    ///
+    /// Behavior:
+    /// - If a topic already exists, returns an error for that topic.
+    /// - If validate_only is true, validates the topic config without creating.
+    /// - Other topics in the batch are created successfully.
+    pub fn create_topics(&self, topics: Vec<NewTopic>) -> CreateTopicsResult {
+        self.create_topics_with_options(topics, CreateTopicsOptions::default())
+    }
+
+    /// Creates new topics with options.
+    ///
+    /// # Arguments
+    /// * `topics` - The topics to create
+    /// * `options` - Options controlling the operation (timeout, validate_only, etc.)
+    pub fn create_topics_with_options(
+        &self,
+        topics: Vec<NewTopic>,
+        options: CreateTopicsOptions,
+    ) -> CreateTopicsResult {
+        let mut result = CreateTopicsResult::new();
+        let mut topics_state = self.topics.lock().unwrap();
+
+        for new_topic in topics {
+            let topic_name = new_topic.name.clone();
+
+            if topics_state.contains_key(&topic_name) {
+                result.add_error(
+                    topic_name.clone(),
+                    TopicError::AlreadyExists { topic: topic_name },
+                );
+            } else if options.validate_only {
+                result.add_success(
+                    topic_name.clone(),
+                    TopicMetadata {
+                        name: topic_name,
+                        num_partitions: new_topic.num_partitions,
+                        replication_factor: new_topic.replication_factor,
+                        configs: new_topic.configs.clone(),
+                        partition_metadata: Vec::new(),
+                    },
+                );
+            } else {
+                let internal_topic = InternalTopic::from_new_topic(&new_topic, false);
+                let metadata = internal_topic.to_metadata();
+                topics_state.insert(topic_name.clone(), internal_topic);
+                result.add_success(topic_name, metadata);
+            }
+        }
+
+        result
+    }
+
+    /// Deletes topics.
+    ///
+    /// This corresponds to `Admin.deleteTopics()` in Java.
+    /// Returns a `DeleteTopicsResult` containing the results for each topic.
+    ///
+    /// Behavior:
+    /// - If a topic does not exist, returns an error for that topic.
+    /// - Other topics in the batch are deleted successfully.
+    pub fn delete_topics(&self, topic_names: Vec<String>) -> DeleteTopicsResult {
+        self.delete_topics_with_options(topic_names, DeleteTopicsOptions::default())
+    }
+
+    /// Deletes topics with options.
+    pub fn delete_topics_with_options(
+        &self,
+        topic_names: Vec<String>,
+        _options: DeleteTopicsOptions,
+    ) -> DeleteTopicsResult {
+        let mut result = DeleteTopicsResult::new();
+        let mut topics_state = self.topics.lock().unwrap();
+
+        for topic_name in topic_names {
+            if topics_state.remove(&topic_name).is_some() {
+                result.add_success(topic_name);
+            } else {
+                result.add_error(
+                    topic_name.clone(),
+                    TopicError::DoesNotExist { topic: topic_name },
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Lists all topics.
+    ///
+    /// This corresponds to `Admin.listTopics()` in Java.
+    /// Returns a `ListTopicsResult` containing all topic listings.
+    pub fn list_topics(&self) -> ListTopicsResult {
+        self.list_topics_with_options(ListTopicsOptions::default())
+    }
+
+    /// Lists topics with options.
+    ///
+    /// # Arguments
+    /// * `options` - Options controlling the operation (include internal topics, etc.)
+    pub fn list_topics_with_options(&self, options: ListTopicsOptions) -> ListTopicsResult {
+        let topics_state = self.topics.lock().unwrap();
+        let listings: Vec<TopicListing> = topics_state
+            .values()
+            .filter(|t| options.list_internal || !t.is_internal)
+            .map(|t| t.to_listing())
+            .collect();
+
+        ListTopicsResult::new(listings)
+    }
+
+    /// Describes topics.
+    ///
+    /// This corresponds to `Admin.describeTopics()` in Java.
+    /// Returns metadata for the requested topics.
+    pub fn describe_topics(&self, topic_names: Vec<String>) -> DescribeTopicsResult {
+        let mut result = DescribeTopicsResult::new();
+        let topics_state = self.topics.lock().unwrap();
+
+        for topic_name in topic_names {
+            if let Some(topic) = topics_state.get(&topic_name) {
+                result.add_success(topic_name, topic.to_metadata());
+            } else {
+                result.add_error(
+                    topic_name.clone(),
+                    TopicError::DoesNotExist { topic: topic_name },
+                );
+            }
+        }
+
+        result
+    }
+
+    // ===== Consumer Group Offset Management =====
+
+    // ===== Consumer Group Management =====
+
+    /// Lists all consumer groups.
+    ///
+    /// This corresponds to `Admin.listConsumerGroups()` in Java.
+    /// Returns a `ListConsumerGroupsResult` containing all consumer group listings.
+    pub fn list_consumer_groups(&self) -> ListConsumerGroupsResult {
+        let offsets_state = self.consumer_group_offsets.lock().unwrap();
+        let listings: Vec<ConsumerGroupListing> = offsets_state
+            .keys()
+            .map(|group_id| ConsumerGroupListing::new(group_id.clone(), true))
+            .collect();
+        ListConsumerGroupsResult::new(listings)
+    }
+
+    /// Lists consumer group offsets.
+    ///
+    /// This corresponds to `Admin.listConsumerGroupOffsets()` in Java.
+    /// Returns the offsets for all partitions in the consumer group.
+    ///
+    /// If the consumer group does not exist, returns an empty map.
+    pub fn list_consumer_group_offsets(
         &self,
         group_id: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ConsumerGroupDescription, String>> + Send>> {
-        let group_id = group_id.to_string();
-        let closed = self.closed.clone();
- 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
- 
-            Ok(ConsumerGroupDescription {
-                group_id: group_id.clone(),
-                is_simple_consumer_group: false,
-                state: "Stable".to_string(),
-                members: vec![MemberDescription {
-                    consumer_id: "consumer-1".to_string(),
-                    host: "localhost".to_string(),
-                    client_id: "mock-client".to_string(),
-                    assignments: vec![],
-                }],
-            })
-        })
+    ) -> HashMap<TopicPartition, OffsetAndMetadata> {
+        self.list_consumer_group_offsets_with_options(
+            group_id,
+            ListConsumerGroupOffsetsOptions::default(),
+        )
     }
- 
-    fn delete_consumer_group(
+
+    /// Lists consumer group offsets with options.
+    pub fn list_consumer_group_offsets_with_options(
         &self,
-        _group_id: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
-        let closed = self.closed.clone();
- 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
-            }
- 
-            // Mock delete is a no-op
-            Ok(())
-        })
+        group_id: &str,
+        _options: ListConsumerGroupOffsetsOptions,
+    ) -> HashMap<TopicPartition, OffsetAndMetadata> {
+        let offsets_state = self.consumer_group_offsets.lock().unwrap();
+        offsets_state
+            .get(group_id)
+            .cloned()
+            .unwrap_or_else(HashMap::new)
     }
- 
-    fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let closed = self.closed.clone();
- 
-        Box::pin(async move {
-            let mut c = closed.lock().unwrap();
-            *c = true;
-        })
+
+    /// Alters consumer group offsets.
+    ///
+    /// This corresponds to `Admin.alterConsumerGroupOffsets()` in Java.
+    /// Sets the offsets for the specified partitions in the consumer group.
+    ///
+    /// Behavior:
+    /// - If the consumer group does not exist, creates it.
+    /// - Offsets are merged with existing offsets (overwrites existing partitions).
+    ///
+    /// # Arguments
+    /// * `group_id` - The consumer group ID
+    /// * `offsets` - Map of TopicPartition to OffsetAndMetadata
+    pub fn alter_consumer_group_offsets(
+        &self,
+        group_id: &str,
+        offsets: HashMap<TopicPartition, OffsetAndMetadata>,
+    ) -> AlterConsumerGroupOffsetsResult {
+        self.alter_consumer_group_offsets_with_options(
+            group_id,
+            offsets,
+            AlterConsumerGroupOffsetsOptions::default(),
+        )
     }
- 
-    fn close_with_timeout(&self, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
-        let closed = self.closed.clone();
- 
-        Box::pin(async move {
-            let is_closed = *closed.lock().unwrap();
-            if is_closed {
-                return Err("Admin client is closed".to_string());
+
+    /// Alters consumer group offsets with options.
+    pub fn alter_consumer_group_offsets_with_options(
+        &self,
+        group_id: &str,
+        offsets: HashMap<TopicPartition, OffsetAndMetadata>,
+        _options: AlterConsumerGroupOffsetsOptions,
+    ) -> AlterConsumerGroupOffsetsResult {
+        let mut result = AlterConsumerGroupOffsetsResult::new();
+        let mut offsets_state = self.consumer_group_offsets.lock().unwrap();
+
+        // Get or create the group offsets map
+        let group_offsets = offsets_state
+            .entry(group_id.to_string())
+            .or_insert_with(HashMap::new);
+
+        for (tp, offset_and_metadata) in offsets {
+            group_offsets.insert(tp.clone(), offset_and_metadata);
+            result.add_success(tp);
+        }
+
+        result
+    }
+
+    /// Deletes consumer group offsets.
+    ///
+    /// This corresponds to `Admin.deleteConsumerGroupOffsets()` in Java.
+    /// Removes the offsets for the specified partitions in the consumer group.
+    ///
+    /// Behavior:
+    /// - If the consumer group does not exist, returns an error.
+    /// - If a partition does not have an offset, returns an error for that partition.
+    pub fn delete_consumer_group_offsets(
+        &self,
+        group_id: &str,
+        partitions: HashSet<TopicPartition>,
+    ) -> DeleteConsumerGroupOffsetsResult {
+        let mut result = DeleteConsumerGroupOffsetsResult::new();
+        let mut offsets_state = self.consumer_group_offsets.lock().unwrap();
+
+        if !offsets_state.contains_key(group_id) {
+            result.set_error(ConsumerGroupError::DoesNotExist {
+                group_id: group_id.to_string(),
+            });
+            return result;
+        }
+
+        let group_offsets = offsets_state.get_mut(group_id).unwrap();
+
+        for tp in partitions {
+            if group_offsets.remove(&tp).is_some() {
+                result.add_success(tp);
+            } else {
+                result.add_error(
+                    tp.clone(),
+                    ConsumerGroupError::InvalidOffset {
+                        group_id: group_id.to_string(),
+                        message: format!("No offset for partition {}", tp),
+                    },
+                );
             }
-            let mut c = closed.lock().unwrap();
-            *c = true;
+        }
+
+        result
+    }
+
+    /// Deletes consumer groups.
+    ///
+    /// This corresponds to `Admin.deleteConsumerGroups()` in Java.
+    /// Removes the consumer groups and all their offsets.
+    ///
+    /// Behavior:
+    /// - If a consumer group does not exist, returns an error for that group.
+    pub fn delete_consumer_groups(&self, group_ids: HashSet<String>) -> DeleteConsumerGroupsResult {
+        let mut result = DeleteConsumerGroupsResult::new();
+        let mut offsets_state = self.consumer_group_offsets.lock().unwrap();
+
+        for group_id in group_ids {
+            if offsets_state.remove(&group_id).is_some() {
+                result.add_success(group_id);
+            } else {
+                result.add_error(
+                    group_id.clone(),
+                    ConsumerGroupError::DoesNotExist { group_id },
+                );
+            }
+        }
+
+        result
+    }
+
+    // ===== Configuration Management =====
+
+    /// Incrementally alters topic configurations.
+    ///
+    /// This corresponds to `Admin.incrementalAlterConfigs()` in Java.
+    /// Supports SET, DELETE, APPEND, and SUBTRACT operations on topic configs.
+    ///
+    /// Behavior:
+    /// - If a topic does not exist, returns an error for that resource.
+    /// - For TOPIC resources, modifies the topic's configs.
+    /// - BROKER resources are not supported in mock.
+    ///
+    /// # Arguments
+    /// * `configs` - Map of ConfigResource to collection of AlterConfigOp operations
+    pub fn incremental_alter_configs(
+        &self,
+        configs: HashMap<ConfigResource, Vec<AlterConfigOp>>,
+    ) -> AlterConfigsResult {
+        self.incremental_alter_configs_with_options(configs, AlterConfigsOptions::default())
+    }
+
+    /// Incrementally alters topic configurations with options.
+    pub fn incremental_alter_configs_with_options(
+        &self,
+        configs: HashMap<ConfigResource, Vec<AlterConfigOp>>,
+        options: AlterConfigsOptions,
+    ) -> AlterConfigsResult {
+        let mut result = AlterConfigsResult::new();
+        let mut topics_state = self.topics.lock().unwrap();
+
+        for (resource, ops) in configs {
+            // Only support TOPIC resources in mock
+            if resource.type_() != ConfigResourceType::Topic {
+                result.add_error(
+                    resource.clone(),
+                    ConfigError::Failed {
+                        resource: resource.name().to_string(),
+                        message: "Only TOPIC resources are supported in mock".to_string(),
+                    },
+                );
+                continue;
+            }
+
+            let topic_name = resource.name();
+            if !topics_state.contains_key(topic_name) {
+                result.add_error(
+                    resource.clone(),
+                    ConfigError::DoesNotExist {
+                        resource: topic_name.to_string(),
+                        message: "Topic does not exist".to_string(),
+                    },
+                );
+                continue;
+            }
+
+            if options.validate_only_value() {
+                // Just validate, don't apply changes
+                result.add_success(resource);
+                continue;
+            }
+
+            // Apply the operations
+            let topic = topics_state.get_mut(topic_name).unwrap();
+            for op in ops {
+                let key = op.key();
+                let op_type = op.op_type();
+
+                match op_type {
+                    AlterConfigOpType::Set => {
+                        topic
+                            .configs
+                            .insert(key.to_string(), op.value().to_string());
+                    }
+                    AlterConfigOpType::Delete => {
+                        topic.configs.remove(key);
+                    }
+                    AlterConfigOpType::Append => {
+                        // For list-type configs, append to existing value
+                        let current = topic.configs.get(key).cloned().unwrap_or_default();
+                        let new_value = if current.is_empty() {
+                            op.value().to_string()
+                        } else {
+                            format!("{}{}", current, op.value())
+                        };
+                        topic.configs.insert(key.to_string(), new_value);
+                    }
+                    AlterConfigOpType::Subtract => {
+                        // For list-type configs, subtract from existing value
+                        if let Some(current) = topic.configs.get(key) {
+                            let value_to_remove = op.value();
+                            // Simple implementation: remove substring if present
+                            let new_value = current.replace(value_to_remove, "");
+                            if new_value.is_empty() {
+                                topic.configs.remove(key);
+                            } else {
+                                topic.configs.insert(key.to_string(), new_value);
+                            }
+                        }
+                    }
+                }
+            }
+
+            result.add_success(resource);
+        }
+
+        result
+    }
+
+    // ===== Utility methods for testing =====
+
+    /// Lists offsets for partitions.
+    ///
+    /// This corresponds to `Admin.listOffsets()` in Java.
+    /// Returns the offsets for the specified partitions based on the offset spec.
+    pub fn list_offsets(
+        &self,
+        partitions: Vec<TopicPartition>,
+        spec: OffsetSpec,
+    ) -> HashMap<TopicPartition, Result<i64, TopicError>> {
+        let topics_state = self.topics.lock().unwrap();
+        let mut results = HashMap::new();
+
+        for tp in partitions {
+            let topic_name = tp.topic().to_string();
+            let partition = tp.partition();
+            if let Some(topic) = topics_state.get(&topic_name) {
+                if partition < 0 || partition >= topic.num_partitions {
+                    results.insert(tp, Err(TopicError::DoesNotExist { topic: topic_name }));
+                } else {
+                    // Return a mock offset based on the spec
+                    let offset = match spec {
+                        OffsetSpec::Earliest => 0,
+                        OffsetSpec::Latest => 1000, // Mock latest offset
+                        OffsetSpec::Timestamp(ts) => {
+                            // Simple mock: return offset based on timestamp
+                            if ts > 0 {
+                                (ts / 1000) as i64 // Simplified mapping
+                            } else {
+                                0
+                            }
+                        }
+                    };
+                    results.insert(tp, Ok(offset));
+                }
+            } else {
+                results.insert(tp, Err(TopicError::DoesNotExist { topic: topic_name }));
+            }
+        }
+
+        results
+    }
+
+    /// Describes topic configurations.
+    ///
+    /// This corresponds to `Admin.describeConfigs()` for topics in Java.
+    /// Returns the configurations for the specified topics.
+    pub fn describe_topic_configs(
+        &self,
+        topic_names: &[String],
+    ) -> HashMap<String, Option<HashMap<String, String>>> {
+        let topics_state = self.topics.lock().unwrap();
+        let mut results = HashMap::new();
+
+        for topic_name in topic_names {
+            if let Some(topic) = topics_state.get(topic_name) {
+                results.insert(topic_name.clone(), Some(topic.configs.clone()));
+            } else {
+                results.insert(topic_name.clone(), None);
+            }
+        }
+
+        results
+    }
+
+    /// Clears all state (topics and consumer group offsets).
+    pub fn clear(&self) {
+        self.topics.lock().unwrap().clear();
+        self.consumer_group_offsets.lock().unwrap().clear();
+    }
+
+    /// Returns the number of topics.
+    pub fn topic_count(&self) -> usize {
+        self.topics.lock().unwrap().len()
+    }
+
+    /// Returns whether a topic exists.
+    pub fn topic_exists(&self, topic_name: &str) -> bool {
+        self.topics.lock().unwrap().contains_key(topic_name)
+    }
+
+    /// Returns the number of consumer groups.
+    pub fn consumer_group_count(&self) -> usize {
+        self.consumer_group_offsets.lock().unwrap().len()
+    }
+
+    /// Returns whether a consumer group exists.
+    pub fn consumer_group_exists(&self, group_id: &str) -> bool {
+        self.consumer_group_offsets
+            .lock()
+            .unwrap()
+            .contains_key(group_id)
+    }
+}
+
+impl Default for MockAdmin {
+    fn default() -> Self {
+        MockAdmin::new()
+    }
+}
+
+// ===== AdminClient trait implementation =====
+
+impl AdminClient for MockAdmin {
+    fn list_consumer_group_offsets(&self, group_id: &str) -> HashMap<String, serde_json::Value> {
+        let offsets = self.list_consumer_group_offsets(group_id);
+        offsets
+            .into_iter()
+            .map(|(tp, om)| {
+                let key = format!("{}:{}", tp.topic(), tp.partition());
+                let value = serde_json::json!({
+                    "offset": om.offset(),
+                    "metadata": om.metadata(),
+                    "leader_epoch": om.leader_epoch()
+                });
+                (key, value)
+            })
+            .collect()
+    }
+
+    fn alter_consumer_group_offsets(
+        &self,
+        group_id: &str,
+        offsets: HashMap<String, serde_json::Value>,
+    ) -> Result<(), ConnectError> {
+        let parsed_offsets: HashMap<TopicPartition, OffsetAndMetadata> = offsets
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                let topic = parts[0];
+                let partition: i32 = parts[1].parse().ok()?;
+                let tp = TopicPartition::new(topic, partition);
+                let offset = value.get("offset")?.as_i64()?;
+                let om = OffsetAndMetadata::new(offset);
+                Some((tp, om))
+            })
+            .collect();
+
+        let result = self.alter_consumer_group_offsets(group_id, parsed_offsets);
+        if result.has_errors() {
+            Err(ConnectError::General {
+                message: "Failed to alter some consumer group offsets".to_string(),
+            })
+        } else {
             Ok(())
-        })
+        }
+    }
+
+    fn delete_consumer_group_offsets(
+        &self,
+        group_id: &str,
+        partitions: HashSet<String>,
+    ) -> Result<(), ConnectError> {
+        let parsed_partitions: HashSet<TopicPartition> = partitions
+            .into_iter()
+            .filter_map(|key| {
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                let topic = parts[0];
+                let partition: i32 = parts[1].parse().ok()?;
+                Some(TopicPartition::new(topic, partition))
+            })
+            .collect();
+
+        let result = self.delete_consumer_group_offsets(group_id, parsed_partitions);
+        if result.has_errors() {
+            Err(ConnectError::General {
+                message: "Failed to delete some consumer group offsets".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn delete_consumer_groups(&self, group_ids: HashSet<String>) -> Result<(), ConnectError> {
+        let result = self.delete_consumer_groups(group_ids);
+        if result.has_errors() {
+            Err(ConnectError::General {
+                message: "Failed to delete some consumer groups".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fence_producers(&self, _transactional_ids: Vec<String>) -> Result<(), ConnectError> {
+        Ok(())
+    }
+}
+
+// ===== Options Types =====
+
+/// Options for createTopics operation.
+#[derive(Debug, Clone)]
+pub struct CreateTopicsOptions {
+    timeout_ms: i32,
+    validate_only: bool,
+}
+
+impl CreateTopicsOptions {
+    pub fn new() -> Self {
+        CreateTopicsOptions {
+            timeout_ms: 60000,
+            validate_only: false,
+        }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+
+    pub fn validate_only_value(&self) -> bool {
+        self.validate_only
+    }
+}
+
+impl Default for CreateTopicsOptions {
+    fn default() -> Self {
+        CreateTopicsOptions::new()
+    }
+}
+
+/// Options for deleteTopics operation.
+#[derive(Debug, Clone)]
+pub struct DeleteTopicsOptions {
+    timeout_ms: i32,
+}
+
+impl DeleteTopicsOptions {
+    pub fn new() -> Self {
+        DeleteTopicsOptions { timeout_ms: 60000 }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+}
+
+impl Default for DeleteTopicsOptions {
+    fn default() -> Self {
+        DeleteTopicsOptions::new()
+    }
+}
+
+/// Options for listTopics operation.
+#[derive(Debug, Clone)]
+pub struct ListTopicsOptions {
+    timeout_ms: i32,
+    list_internal: bool,
+}
+
+impl ListTopicsOptions {
+    pub fn new() -> Self {
+        ListTopicsOptions {
+            timeout_ms: 60000,
+            list_internal: false,
+        }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn list_internal(mut self, list_internal: bool) -> Self {
+        self.list_internal = list_internal;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+
+    pub fn list_internal_value(&self) -> bool {
+        self.list_internal
+    }
+}
+
+impl Default for ListTopicsOptions {
+    fn default() -> Self {
+        ListTopicsOptions::new()
+    }
+}
+
+/// Options for listConsumerGroupOffsets operation.
+#[derive(Debug, Clone)]
+pub struct ListConsumerGroupOffsetsOptions {
+    timeout_ms: i32,
+}
+
+impl ListConsumerGroupOffsetsOptions {
+    pub fn new() -> Self {
+        ListConsumerGroupOffsetsOptions { timeout_ms: 60000 }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+}
+
+impl Default for ListConsumerGroupOffsetsOptions {
+    fn default() -> Self {
+        ListConsumerGroupOffsetsOptions::new()
+    }
+}
+
+/// Options for alterConsumerGroupOffsets operation.
+#[derive(Debug, Clone)]
+pub struct AlterConsumerGroupOffsetsOptions {
+    timeout_ms: i32,
+}
+
+impl AlterConsumerGroupOffsetsOptions {
+    pub fn new() -> Self {
+        AlterConsumerGroupOffsetsOptions { timeout_ms: 60000 }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+}
+
+impl Default for AlterConsumerGroupOffsetsOptions {
+    fn default() -> Self {
+        AlterConsumerGroupOffsetsOptions::new()
+    }
+}
+
+/// Options for incrementalAlterConfigs operation.
+#[derive(Debug, Clone)]
+pub struct AlterConfigsOptions {
+    timeout_ms: i32,
+    validate_only: bool,
+}
+
+impl AlterConfigsOptions {
+    pub fn new() -> Self {
+        AlterConfigsOptions {
+            timeout_ms: 60000,
+            validate_only: false,
+        }
+    }
+
+    pub fn timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+
+    pub fn timeout_ms_value(&self) -> i32 {
+        self.timeout_ms
+    }
+
+    pub fn validate_only_value(&self) -> bool {
+        self.validate_only
+    }
+}
+
+impl Default for AlterConfigsOptions {
+    fn default() -> Self {
+        AlterConfigsOptions::new()
+    }
+}
+
+// ===== Result Types =====
+
+/// Result of createTopics operation.
+#[derive(Debug)]
+pub struct CreateTopicsResult {
+    successes: HashMap<String, TopicMetadata>,
+    errors: HashMap<String, TopicError>,
+}
+
+impl CreateTopicsResult {
+    fn new() -> Self {
+        CreateTopicsResult {
+            successes: HashMap::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, topic_name: String, metadata: TopicMetadata) {
+        self.successes.insert(topic_name, metadata);
+    }
+
+    fn add_error(&mut self, topic_name: String, error: TopicError) {
+        self.errors.insert(topic_name, error);
+    }
+
+    /// Returns the metadata for a successfully created topic.
+    pub fn metadata(&self, topic_name: &str) -> Option<&TopicMetadata> {
+        self.successes.get(topic_name)
+    }
+
+    /// Returns the error for a failed topic creation.
+    pub fn error(&self, topic_name: &str) -> Option<&TopicError> {
+        self.errors.get(topic_name)
+    }
+
+    /// Returns all successful topic creations.
+    pub fn successes(&self) -> &HashMap<String, TopicMetadata> {
+        &self.successes
+    }
+
+    /// Returns all failed topic creations.
+    pub fn errors(&self) -> &HashMap<String, TopicError> {
+        &self.errors
+    }
+
+    /// Returns the number of successful creations.
+    pub fn success_count(&self) -> usize {
+        self.successes.len()
+    }
+
+    /// Returns the number of failed creations.
+    pub fn failed_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Returns whether all topics were created successfully.
+    pub fn all_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns whether any topics failed.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Result of deleteTopics operation.
+#[derive(Debug)]
+pub struct DeleteTopicsResult {
+    successes: HashSet<String>,
+    errors: HashMap<String, TopicError>,
+}
+
+impl DeleteTopicsResult {
+    fn new() -> Self {
+        DeleteTopicsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, topic_name: String) {
+        self.successes.insert(topic_name);
+    }
+
+    fn add_error(&mut self, topic_name: String, error: TopicError) {
+        self.errors.insert(topic_name, error);
+    }
+
+    /// Returns whether a topic was deleted successfully.
+    pub fn success(&self, topic_name: &str) -> bool {
+        self.successes.contains(topic_name)
+    }
+
+    /// Returns the error for a failed topic deletion.
+    pub fn error(&self, topic_name: &str) -> Option<&TopicError> {
+        self.errors.get(topic_name)
+    }
+
+    /// Returns all successfully deleted topics.
+    pub fn successes(&self) -> &HashSet<String> {
+        &self.successes
+    }
+
+    /// Returns all failed topic deletions.
+    pub fn errors(&self) -> &HashMap<String, TopicError> {
+        &self.errors
+    }
+
+    /// Returns the number of successful deletions.
+    pub fn success_count(&self) -> usize {
+        self.successes.len()
+    }
+
+    /// Returns the number of failed deletions.
+    pub fn failed_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Returns whether all topics were deleted successfully.
+    pub fn all_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns whether any topics failed.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Result of listTopics operation.
+#[derive(Debug)]
+pub struct ListTopicsResult {
+    listings: Vec<TopicListing>,
+}
+
+impl ListTopicsResult {
+    fn new(listings: Vec<TopicListing>) -> Self {
+        ListTopicsResult { listings }
+    }
+
+    /// Returns all topic listings.
+    pub fn listings(&self) -> &Vec<TopicListing> {
+        &self.listings
+    }
+
+    /// Returns topic names.
+    pub fn names(&self) -> Vec<String> {
+        self.listings.iter().map(|l| l.name.clone()).collect()
+    }
+
+    /// Returns the number of topics.
+    pub fn count(&self) -> usize {
+        self.listings.len()
+    }
+}
+
+/// Listing for a consumer group.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.ConsumerGroupListing` in Java.
+#[derive(Debug, Clone)]
+pub struct ConsumerGroupListing {
+    group_id: String,
+    is_simple: bool,
+}
+
+impl ConsumerGroupListing {
+    /// Creates a new consumer group listing.
+    pub fn new(group_id: impl Into<String>, is_simple: bool) -> Self {
+        ConsumerGroupListing {
+            group_id: group_id.into(),
+            is_simple,
+        }
+    }
+
+    /// Returns the consumer group ID.
+    pub fn group_id(&self) -> &str {
+        &self.group_id
+    }
+
+    /// Returns whether the group is simple (not using consumer group protocol).
+    pub fn is_simple(&self) -> bool {
+        self.is_simple
+    }
+}
+
+/// Result of listConsumerGroups operation.
+///
+/// This corresponds to `org.apache.kafka.clients.admin.ListConsumerGroupsResult` in Java.
+#[derive(Debug)]
+pub struct ListConsumerGroupsResult {
+    listings: Vec<ConsumerGroupListing>,
+}
+
+impl ListConsumerGroupsResult {
+    fn new(listings: Vec<ConsumerGroupListing>) -> Self {
+        ListConsumerGroupsResult { listings }
+    }
+
+    /// Returns all consumer group listings.
+    pub fn listings(&self) -> &Vec<ConsumerGroupListing> {
+        &self.listings
+    }
+
+    /// Returns consumer group IDs.
+    pub fn group_ids(&self) -> Vec<String> {
+        self.listings.iter().map(|l| l.group_id.clone()).collect()
+    }
+
+    /// Returns the number of consumer groups.
+    pub fn count(&self) -> usize {
+        self.listings.len()
+    }
+}
+
+/// Result of describeTopics operation.
+#[derive(Debug)]
+pub struct DescribeTopicsResult {
+    successes: HashMap<String, TopicMetadata>,
+    errors: HashMap<String, TopicError>,
+}
+
+impl DescribeTopicsResult {
+    fn new() -> Self {
+        DescribeTopicsResult {
+            successes: HashMap::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, topic_name: String, metadata: TopicMetadata) {
+        self.successes.insert(topic_name, metadata);
+    }
+
+    fn add_error(&mut self, topic_name: String, error: TopicError) {
+        self.errors.insert(topic_name, error);
+    }
+
+    /// Returns the metadata for a topic.
+    pub fn metadata(&self, topic_name: &str) -> Option<&TopicMetadata> {
+        self.successes.get(topic_name)
+    }
+
+    /// Returns the error for a topic.
+    pub fn error(&self, topic_name: &str) -> Option<&TopicError> {
+        self.errors.get(topic_name)
+    }
+
+    /// Returns all successful topic descriptions.
+    pub fn successes(&self) -> &HashMap<String, TopicMetadata> {
+        &self.successes
+    }
+
+    /// Returns all failed topic descriptions.
+    pub fn errors(&self) -> &HashMap<String, TopicError> {
+        &self.errors
+    }
+}
+
+/// Result of incrementalAlterConfigs operation.
+#[derive(Debug)]
+pub struct AlterConfigsResult {
+    successes: HashSet<ConfigResource>,
+    errors: HashMap<ConfigResource, ConfigError>,
+}
+
+impl AlterConfigsResult {
+    fn new() -> Self {
+        AlterConfigsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, resource: ConfigResource) {
+        self.successes.insert(resource);
+    }
+
+    fn add_error(&mut self, resource: ConfigResource, error: ConfigError) {
+        self.errors.insert(resource, error);
+    }
+
+    /// Returns whether a resource was altered successfully.
+    pub fn success(&self, resource: &ConfigResource) -> bool {
+        self.successes.contains(resource)
+    }
+
+    /// Returns the error for a failed resource.
+    pub fn error(&self, resource: &ConfigResource) -> Option<&ConfigError> {
+        self.errors.get(resource)
+    }
+
+    /// Returns all successfully altered resources.
+    pub fn successes(&self) -> &HashSet<ConfigResource> {
+        &self.successes
+    }
+
+    /// Returns all failed resources.
+    pub fn errors(&self) -> &HashMap<ConfigResource, ConfigError> {
+        &self.errors
+    }
+
+    /// Returns the number of successful alterations.
+    pub fn success_count(&self) -> usize {
+        self.successes.len()
+    }
+
+    /// Returns the number of failed alterations.
+    pub fn failed_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Returns whether all resources were altered successfully.
+    pub fn all_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns whether any resources failed.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Result of alterConsumerGroupOffsets operation.
+#[derive(Debug)]
+pub struct AlterConsumerGroupOffsetsResult {
+    successes: HashSet<TopicPartition>,
+    errors: HashMap<TopicPartition, ConsumerGroupError>,
+}
+
+impl AlterConsumerGroupOffsetsResult {
+    fn new() -> Self {
+        AlterConsumerGroupOffsetsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, tp: TopicPartition) {
+        self.successes.insert(tp);
+    }
+
+    fn add_error(&mut self, tp: TopicPartition, error: ConsumerGroupError) {
+        self.errors.insert(tp, error);
+    }
+
+    /// Returns whether a partition offset was altered successfully.
+    pub fn success(&self, tp: &TopicPartition) -> bool {
+        self.successes.contains(tp)
+    }
+
+    /// Returns the error for a failed partition.
+    pub fn error(&self, tp: &TopicPartition) -> Option<&ConsumerGroupError> {
+        self.errors.get(tp)
+    }
+
+    /// Returns all successfully altered partitions.
+    pub fn successes(&self) -> &HashSet<TopicPartition> {
+        &self.successes
+    }
+
+    /// Returns all failed partitions.
+    pub fn errors(&self) -> &HashMap<TopicPartition, ConsumerGroupError> {
+        &self.errors
+    }
+
+    /// Returns whether all partitions were altered successfully.
+    pub fn all_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns whether any partitions failed.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Result of deleteConsumerGroupOffsets operation.
+#[derive(Debug)]
+pub struct DeleteConsumerGroupOffsetsResult {
+    successes: HashSet<TopicPartition>,
+    errors: HashMap<TopicPartition, ConsumerGroupError>,
+    group_error: Option<ConsumerGroupError>,
+}
+
+impl DeleteConsumerGroupOffsetsResult {
+    fn new() -> Self {
+        DeleteConsumerGroupOffsetsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+            group_error: None,
+        }
+    }
+
+    fn add_success(&mut self, tp: TopicPartition) {
+        self.successes.insert(tp);
+    }
+
+    fn add_error(&mut self, tp: TopicPartition, error: ConsumerGroupError) {
+        self.errors.insert(tp, error);
+    }
+
+    fn set_error(&mut self, error: ConsumerGroupError) {
+        self.group_error = Some(error);
+    }
+
+    /// Returns whether a partition offset was deleted successfully.
+    pub fn success(&self, tp: &TopicPartition) -> bool {
+        self.successes.contains(tp)
+    }
+
+    /// Returns the error for a failed partition.
+    pub fn partition_error(&self, tp: &TopicPartition) -> Option<&ConsumerGroupError> {
+        self.errors.get(tp)
+    }
+
+    /// Returns the group-level error (if group does not exist).
+    pub fn group_error(&self) -> Option<&ConsumerGroupError> {
+        self.group_error.as_ref()
+    }
+
+    /// Returns all successfully deleted partitions.
+    pub fn successes(&self) -> &HashSet<TopicPartition> {
+        &self.successes
+    }
+
+    /// Returns all failed partitions.
+    pub fn errors(&self) -> &HashMap<TopicPartition, ConsumerGroupError> {
+        &self.errors
+    }
+
+    /// Returns whether any errors occurred.
+    pub fn has_errors(&self) -> bool {
+        self.group_error.is_some() || !self.errors.is_empty()
+    }
+}
+
+/// Result of deleteConsumerGroups operation.
+#[derive(Debug)]
+pub struct DeleteConsumerGroupsResult {
+    successes: HashSet<String>,
+    errors: HashMap<String, ConsumerGroupError>,
+}
+
+impl DeleteConsumerGroupsResult {
+    fn new() -> Self {
+        DeleteConsumerGroupsResult {
+            successes: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    fn add_success(&mut self, group_id: String) {
+        self.successes.insert(group_id);
+    }
+
+    fn add_error(&mut self, group_id: String, error: ConsumerGroupError) {
+        self.errors.insert(group_id, error);
+    }
+
+    /// Returns whether a group was deleted successfully.
+    pub fn success(&self, group_id: &str) -> bool {
+        self.successes.contains(group_id)
+    }
+
+    /// Returns the error for a failed group.
+    pub fn error(&self, group_id: &str) -> Option<&ConsumerGroupError> {
+        self.errors.get(group_id)
+    }
+
+    /// Returns all successfully deleted groups.
+    pub fn successes(&self) -> &HashSet<String> {
+        &self.successes
+    }
+
+    /// Returns all failed groups.
+    pub fn errors(&self) -> &HashMap<String, ConsumerGroupError> {
+        &self.errors
+    }
+
+    /// Returns whether any errors occurred.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_topic() {
+        let topic = NewTopic::new("test-topic", 3, 2);
+        assert_eq!(topic.name(), "test-topic");
+        assert_eq!(topic.num_partitions(), 3);
+        assert_eq!(topic.replication_factor(), 2);
+        assert!(topic.configs().is_empty());
+    }
+
+    #[test]
+    fn test_new_topic_with_config() {
+        let topic = NewTopic::new("test-topic", 3, 2)
+            .config("retention.ms", "86400000")
+            .config("cleanup.policy", "compact");
+        assert_eq!(topic.configs().len(), 2);
+        assert_eq!(
+            topic.configs().get("retention.ms"),
+            Some(&"86400000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_create_topics() {
+        let admin = MockAdmin::new();
+        let topics = vec![NewTopic::new("topic1", 3, 2), NewTopic::new("topic2", 5, 3)];
+        let result = admin.create_topics(topics);
+
+        assert!(result.all_success());
+        assert_eq!(result.success_count(), 2);
+        assert_eq!(admin.topic_count(), 2);
+        assert!(admin.topic_exists("topic1"));
+        assert!(admin.topic_exists("topic2"));
+    }
+
+    #[test]
+    fn test_create_duplicate_topic() {
+        let admin = MockAdmin::new();
+        let topics = vec![NewTopic::new("topic1", 3, 2), NewTopic::new("topic1", 5, 3)];
+        let result = admin.create_topics(topics);
+
+        assert!(!result.all_success());
+        assert_eq!(result.success_count(), 1);
+        assert_eq!(result.failed_count(), 1);
+        assert!(matches!(
+            result.error("topic1"),
+            Some(TopicError::AlreadyExists { .. })
+        ));
+    }
+
+    #[test]
+    fn test_create_topics_validate_only() {
+        let admin = MockAdmin::new();
+        let topics = vec![NewTopic::new("topic1", 3, 2)];
+        let options = CreateTopicsOptions::new().validate_only(true);
+        let result = admin.create_topics_with_options(topics, options);
+
+        assert!(result.all_success());
+        assert_eq!(admin.topic_count(), 0);
+    }
+
+    #[test]
+    fn test_delete_topics() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let result = admin.delete_topics(vec!["topic1".to_string()]);
+        assert!(result.all_success());
+        assert_eq!(admin.topic_count(), 0);
+        assert!(!admin.topic_exists("topic1"));
+    }
+
+    #[test]
+    fn test_delete_nonexistent_topic() {
+        let admin = MockAdmin::new();
+        let result = admin.delete_topics(vec!["nonexistent".to_string()]);
+
+        assert!(!result.all_success());
+        assert_eq!(result.failed_count(), 1);
+        assert!(matches!(
+            result.error("nonexistent"),
+            Some(TopicError::DoesNotExist { .. })
+        ));
+    }
+
+    #[test]
+    fn test_list_topics() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![
+            NewTopic::new("topic1", 3, 2),
+            NewTopic::new("topic2", 5, 3),
+        ]);
+
+        let result = admin.list_topics();
+        assert_eq!(result.count(), 2);
+        let names = result.names();
+        assert!(names.contains(&"topic1".to_string()));
+        assert!(names.contains(&"topic2".to_string()));
+    }
+
+    #[test]
+    fn test_describe_topics() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let result = admin.describe_topics(vec!["topic1".to_string()]);
+        assert!(result.metadata("topic1").is_some());
+        let metadata = result.metadata("topic1").unwrap();
+        assert_eq!(metadata.num_partitions(), 3);
+        assert_eq!(metadata.partition_metadata().len(), 3);
+    }
+
+    #[test]
+    fn test_alter_consumer_group_offsets() {
+        let admin = MockAdmin::new();
+        let offsets = HashMap::from([
+            (
+                TopicPartition::new("topic1", 0),
+                OffsetAndMetadata::new(100),
+            ),
+            (
+                TopicPartition::new("topic1", 1),
+                OffsetAndMetadata::new(200),
+            ),
+        ]);
+
+        let result = admin.alter_consumer_group_offsets("group1", offsets);
+        assert!(result.all_success());
+        assert!(admin.consumer_group_exists("group1"));
+
+        let stored_offsets = admin.list_consumer_group_offsets("group1");
+        assert_eq!(stored_offsets.len(), 2);
+        assert_eq!(
+            stored_offsets
+                .get(&TopicPartition::new("topic1", 0))
+                .unwrap()
+                .offset(),
+            100
+        );
+    }
+
+    #[test]
+    fn test_list_consumer_group_offsets_nonexistent() {
+        let admin = MockAdmin::new();
+        let offsets = admin.list_consumer_group_offsets("nonexistent-group");
+        assert!(offsets.is_empty());
+    }
+
+    #[test]
+    fn test_delete_consumer_group_offsets() {
+        let admin = MockAdmin::new();
+        admin.alter_consumer_group_offsets(
+            "group1",
+            HashMap::from([(
+                TopicPartition::new("topic1", 0),
+                OffsetAndMetadata::new(100),
+            )]),
+        );
+
+        let result = admin.delete_consumer_group_offsets(
+            "group1",
+            HashSet::from([TopicPartition::new("topic1", 0)]),
+        );
+        assert!(!result.has_errors());
+
+        let offsets = admin.list_consumer_group_offsets("group1");
+        assert!(offsets.is_empty());
+    }
+
+    #[test]
+    fn test_delete_consumer_group_offsets_nonexistent_group() {
+        let admin = MockAdmin::new();
+        let result = admin.delete_consumer_group_offsets(
+            "nonexistent-group",
+            HashSet::from([TopicPartition::new("topic1", 0)]),
+        );
+
+        assert!(result.has_errors());
+        assert!(matches!(
+            result.group_error(),
+            Some(ConsumerGroupError::DoesNotExist { .. })
+        ));
+    }
+
+    #[test]
+    fn test_delete_consumer_groups() {
+        let admin = MockAdmin::new();
+        admin.alter_consumer_group_offsets(
+            "group1",
+            HashMap::from([(
+                TopicPartition::new("topic1", 0),
+                OffsetAndMetadata::new(100),
+            )]),
+        );
+
+        let result = admin.delete_consumer_groups(HashSet::from(["group1".to_string()]));
+        assert!(!result.has_errors());
+        assert!(!admin.consumer_group_exists("group1"));
+    }
+
+    #[test]
+    fn test_delete_nonexistent_consumer_group() {
+        let admin = MockAdmin::new();
+        let result = admin.delete_consumer_groups(HashSet::from(["nonexistent".to_string()]));
+
+        assert!(result.has_errors());
+        assert!(matches!(
+            result.error("nonexistent"),
+            Some(ConsumerGroupError::DoesNotExist { .. })
+        ));
+    }
+
+    #[test]
+    fn test_clear() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+        admin.alter_consumer_group_offsets(
+            "group1",
+            HashMap::from([(
+                TopicPartition::new("topic1", 0),
+                OffsetAndMetadata::new(100),
+            )]),
+        );
+
+        admin.clear();
+        assert_eq!(admin.topic_count(), 0);
+        assert_eq!(admin.consumer_group_count(), 0);
+    }
+
+    #[test]
+    fn test_admin_client_trait() {
+        let admin = MockAdmin::new();
+
+        // Test trait implementation
+        let trait_admin: &dyn AdminClient = &admin;
+
+        // alter_consumer_group_offsets via trait
+        let offsets = HashMap::from([("topic1:0".to_string(), serde_json::json!({"offset": 100}))]);
+        trait_admin
+            .alter_consumer_group_offsets("group1", offsets)
+            .unwrap();
+
+        // list_consumer_group_offsets via trait
+        let result = trait_admin.list_consumer_group_offsets("group1");
+        assert!(result.contains_key("topic1:0"));
+
+        // delete_consumer_group_offsets via trait
+        trait_admin
+            .delete_consumer_group_offsets("group1", HashSet::from(["topic1:0".to_string()]))
+            .unwrap();
+
+        // delete_consumer_groups via trait
+        trait_admin
+            .delete_consumer_groups(HashSet::from(["group1".to_string()]))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_with_topics() {
+        let topics = vec![NewTopic::new("topic1", 3, 2), NewTopic::new("topic2", 5, 3)];
+        let admin = MockAdmin::with_topics(topics);
+
+        assert_eq!(admin.topic_count(), 2);
+        assert!(admin.topic_exists("topic1"));
+        assert!(admin.topic_exists("topic2"));
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_set() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+        assert!(result.success(&resource));
+
+        // Verify config was set
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("retention.ms"),
+            Some(&"86400000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_delete() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![
+            NewTopic::new("topic1", 3, 2).config("retention.ms", "86400000")
+        ]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::delete("retention.ms")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        // Verify config was deleted
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert!(configs_map.get("retention.ms").is_none());
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_append() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![
+            NewTopic::new("topic1", 3, 2).config("cleanup.policy", "delete")
+        ]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::append("cleanup.policy", ",compact")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        // Verify config was appended
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("cleanup.policy"),
+            Some(&"delete,compact".to_string())
+        );
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_nonexistent_topic() {
+        let admin = MockAdmin::new();
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "nonexistent");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.has_errors());
+        assert!(matches!(
+            result.error(&resource),
+            Some(ConfigError::DoesNotExist { .. })
+        ));
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_validate_only() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![AlterConfigOp::set("retention.ms", "86400000")];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+        let options = AlterConfigsOptions::new().validate_only(true);
+
+        let result = admin.incremental_alter_configs_with_options(configs, options);
+        assert!(result.all_success());
+
+        // Verify config was NOT actually set
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert!(configs_map.get("retention.ms").is_none());
+    }
+
+    #[test]
+    fn test_incremental_alter_configs_multiple_ops() {
+        let admin = MockAdmin::new();
+        admin.create_topics(vec![NewTopic::new("topic1", 3, 2)
+            .config("retention.ms", "86400000")
+            .config("cleanup.policy", "delete")]);
+
+        let resource = ConfigResource::new(ConfigResourceType::Topic, "topic1");
+        let ops = vec![
+            AlterConfigOp::set("retention.ms", "172800000"),
+            AlterConfigOp::append("cleanup.policy", ",compact"),
+        ];
+        let configs = HashMap::from([(resource.clone(), ops)]);
+
+        let result = admin.incremental_alter_configs(configs);
+        assert!(result.all_success());
+
+        let topic_configs = admin.describe_topic_configs(&["topic1".to_string()]);
+        let configs_map = topic_configs.get("topic1").unwrap().as_ref().unwrap();
+        assert_eq!(
+            configs_map.get("retention.ms"),
+            Some(&"172800000".to_string())
+        );
+        assert_eq!(
+            configs_map.get("cleanup.policy"),
+            Some(&"delete,compact".to_string())
+        );
     }
 }

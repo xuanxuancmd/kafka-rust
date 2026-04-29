@@ -1,560 +1,656 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements.  See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License.  You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use anyhow::Result;
+//! Scheduler for async task scheduling.
+//! 
+//! Equivalent to Java's `org.apache.kafka.connect.mirror.Scheduler`.
+//! Uses tokio async runtime for task execution.
+
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tokio::task::{JoinHandle, AbortHandle};
+use tokio::time::{interval, sleep, timeout};
+use anyhow::{Result, anyhow};
 
-/// 定时任务调度器，提供定时任务执行、超时管理和资源清理功能
-///
-/// Scheduler 使用 tokio 的异步运行时来调度和执行任务，支持：
-/// - 定时重复任务
-/// - 延迟启动的定时任务
-/// - 同步执行（带超时）
-/// - 异步执行
-/// - 资源清理和优雅关闭
+/// Task identifier for scheduled tasks.
+pub type TaskId = u64;
+
+/// Type alias for async task function.
+pub type AsyncTask = Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> + Send + Sync>;
+
+/// Scheduler for executing async tasks with configurable timeouts.
+/// 
+/// Supports:
+/// - One-off task execution with timeout
+/// - Repeating tasks at fixed intervals
+/// - Repeating tasks with initial delay
+/// - Task cancellation via stop()
+/// 
+/// Equivalent to Java's `org.apache.kafka.connect.mirror.Scheduler`.
 pub struct Scheduler {
-    /// 调度器名称，用于日志标识
+    /// Name for logging/debugging purposes.
     name: String,
-    /// 任务超时时间
+    /// Default timeout for task execution.
     timeout: Duration,
-    /// 是否已关闭
-    closed: Arc<Mutex<bool>>,
-    /// 所有后台任务的句柄，用于关闭时等待任务完成
-    task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    /// Flag indicating if scheduler is stopped.
+    stopped: Arc<AtomicBool>,
+    /// Map of task handles for cancellation.
+    task_handles: Arc<Mutex<HashMap<TaskId, AbortHandle>>>,
+    /// Next task ID generator.
+    next_task_id: Arc<Mutex<TaskId>>,
 }
 
 impl Scheduler {
-    /// 创建一个新的调度器
-    ///
-    /// # 参数
-    /// - `name`: 调度器名称，用于日志标识
-    /// - `timeout`: 任务执行的超时时间
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("MyScheduler".to_string(), Duration::from_secs(30));
+    /// Creates a new Scheduler with given name and timeout.
+    /// 
+    /// # Arguments
+    /// * `name` - Name for logging/debugging
+    /// * `timeout` - Default timeout for task execution
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let scheduler = Scheduler::new("mirror-source", Duration::from_secs(30));
     /// ```
     pub fn new(name: String, timeout: Duration) -> Self {
         Scheduler {
             name,
             timeout,
-            closed: Arc::new(Mutex::new(false)),
-            task_handles: Arc::new(Mutex::new(Vec::new())),
+            stopped: Arc::new(AtomicBool::new(false)),
+            task_handles: Arc::new(Mutex::new(HashMap::new())),
+            next_task_id: Arc::new(Mutex::new(0)),
         }
     }
 
-    /// 创建一个新的调度器（从类名和角色构造名称）
-    ///
-    /// # 参数
-    /// - `class_name`: 类名
-    /// - `role`: 角色
-    /// - `timeout`: 任务执行的超时时间
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::with_class_and_role("MirrorMaker", "Replication", Duration::from_secs(30));
-    /// ```
-    pub fn with_class_and_role(class_name: &str, role: &str, timeout: Duration) -> Self {
-        let name = format!("Scheduler for {}: {}", class_name, role);
-        Scheduler::new(name, timeout)
+    /// Generates next task ID.
+    fn next_id(&self) -> TaskId {
+        let mut id = self.next_task_id.lock().unwrap();
+        *id += 1;
+        *id
     }
 
-    /// 调度一个重复执行的任务，立即开始执行
-    ///
-    /// # 参数
-    /// - `task`: 要执行的任务
-    /// - `interval`: 执行间隔
-    /// - `description`: 任务描述，用于日志
-    ///
-    /// # 注意
-    /// - 如果间隔为负数，任务不会被调度
-    /// - 任务会在单独的异步任务中执行
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("Test".to_string(), Duration::from_secs(30));
-    /// scheduler.schedule_repeating(
-    ///     || async { println!("Hello"); },
-    ///     Duration::from_secs(5),
-    ///     "Greeting task"
-    /// );
-    /// ```
-    pub fn schedule_repeating<F, Fut>(
-        &self,
-        task: F,
-        interval: Duration,
-        description: String,
-    ) where
-        F: Fn() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        if interval.as_millis() < 0 {
-            return;
-        }
-
-        let name = self.name.clone();
-        let timeout = self.timeout;
-        let closed = self.closed.clone();
-        let task_handles = self.task_handles.clone();
-
-        let handle = tokio::spawn(async move {
-            let mut interval_timer = tokio::time::interval(interval);
-            
-            loop {
-                interval_timer.tick().await;
-                
-                // 检查是否已关闭
-                {
-                    let is_closed = *closed.lock().await;
-                    if is_closed {
-                        info!("{} skipping task due to shutdown: {}", name, description);
-                        break;
-                    }
-                }
-                
-                // 执行任务
-                Self::execute_task_internal(&name, &description, timeout, &task).await;
-            }
-        });
-
-        // 保存任务句柄
-        tokio::spawn(async move {
-            let mut handles = task_handles.lock().await;
-            handles.push(handle);
-        });
+    /// Registers a task handle for later cancellation.
+    fn register_handle(&self, id: TaskId, handle: AbortHandle) {
+        let mut handles = self.task_handles.lock().unwrap();
+        handles.insert(id, handle);
     }
 
-    /// 调度一个重复执行的任务，延迟后开始执行
-    ///
-    /// # 参数
-    /// - `task`: 要执行的任务
-    /// - `interval`: 执行间隔
-    /// - `description`: 任务描述，用于日志
-    ///
-    /// # 注意
-    /// - 如果间隔为负数，任务不会被调度
-    /// - 任务会在间隔时间后首次执行，然后按间隔重复执行
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("Test".to_string(), Duration::from_secs(30));
-    /// scheduler.schedule_repeating_delayed(
-    ///     || async { println!("Delayed Hello"); },
-    ///     Duration::from_secs(5),
-    ///     "Delayed greeting task"
-    /// );
-    /// ```
-    pub fn schedule_repeating_delayed<F, Fut>(
-        &self,
-        task: F,
-        interval: Duration,
-        description: String,
-    ) where
-        F: Fn() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        if interval.as_millis() < 0 {
-            return;
-        }
-
-        let name = self.name.clone();
-        let timeout = self.timeout;
-        let closed = self.closed.clone();
-        let task_handles = self.task_handles.clone();
-
-        let handle = tokio::spawn(async move {
-            // 首次延迟
-            tokio::time::sleep(interval).await;
-            
-            let mut interval_timer = tokio::time::interval(interval);
-            
-            loop {
-                interval_timer.tick().await;
-                
-                // 检查是否已关闭
-                {
-                    let is_closed = *closed.lock().await;
-                    if is_closed {
-                        info!("{} skipping task due to shutdown: {}", name, description);
-                        break;
-                    }
-                }
-                
-                // 执行任务
-                Self::execute_task_internal(&name, &description, timeout, &task).await;
-            }
-        });
-
-        // 保存任务句柄
-        tokio::spawn(async move {
-            let mut handles = task_handles.lock().await;
-            handles.push(handle);
-        });
+    /// Removes a task handle after completion.
+    fn unregister_handle(&self, id: TaskId) {
+        let mut handles = self.task_handles.lock().unwrap();
+        handles.remove(&id);
     }
 
-    /// 同步执行任务，带超时
-    ///
-    /// # 参数
-    /// - `task`: 要执行的任务
-    /// - `description`: 任务描述，用于日志
-    ///
-    /// # 注意
-    /// - 如果任务执行超时，会记录错误日志
-    /// - 如果任务被中断，会记录警告日志
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("Test".to_string(), Duration::from_secs(30));
+    /// Executes a one-off task with timeout.
+    /// 
+    /// Equivalent to Java's `execute(Task task, String description)`.
+    /// 
+    /// # Arguments
+    /// * `task` - Async task to execute
+    /// * `description` - Description for logging
+    /// 
+    /// # Returns
+    /// Result of task execution, or timeout error
+    /// 
+    /// # Example
+    /// ```ignore
     /// scheduler.execute(
-    ///     || async { println!("One-time task"); Ok(()) },
-    ///     "One-time task"
-    /// );
+    ///     Box::new(|| Box::pin(async { 
+    ///         println!("Task executed");
+    ///         Ok(())
+    ///     })),
+    ///     "initial-setup"
+    /// ).await?;
     /// ```
-    pub fn execute<F, Fut>(&self, task: F, description: String)
-    where
-        F: Fn() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        let name = self.name.clone();
-        let timeout = self.timeout;
+    pub async fn execute(&self, task: AsyncTask, description: &str) -> Result<()> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(anyhow!("Scheduler {} is stopped, cannot execute task: {}", self.name, description));
+        }
 
-        tokio::spawn(async move {
-            let result = tokio::time::timeout(timeout, task()).await;
-            
-            match result {
-                Ok(task_result) => {
-                    match task_result {
-                        Ok(_) => {
-                            info!("{} completed task: {}", name, description);
-                        }
-                        Err(e) => {
-                            error!("{} caught exception in task: {}: {}", name, description, e);
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("{} timed out running task: {}", name, description);
-                }
-            }
-        });
-    }
-
-    /// 异步执行任务，不等待完成
-    ///
-    /// # 参数
-    /// - `task`: 要执行的任务
-    /// - `description`: 任务描述，用于日志
-    ///
-    /// # 注意
-    /// - 任务在后台异步执行，不阻塞调用者
-    /// - 不会检查超时
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("Test".to_string(), Duration::from_secs(30));
-    /// scheduler.execute_async(
-    ///     || async { println!("Async task"); Ok(()) },
-    ///     "Async task"
-    /// );
-    /// ```
-    pub fn execute_async<F, Fut>(&self, task: F, description: String)
-    where
-        F: Fn() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        let name = self.name.clone();
-        let timeout = self.timeout;
-
-        tokio::spawn(async move {
-            Self::execute_task_internal(&name, &description, timeout, &task).await;
-        });
-    }
-
-    /// 内部方法：执行任务并记录执行时间和错误
-    async fn execute_task_internal<F, Fut>(
-        name: &str,
-        description: &str,
-        timeout: Duration,
-        task: &F,
-    ) where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
-    {
-        let start = std::time::Instant::now();
+        let task_name = format!("{}-{}", self.name, description);
+        let timeout_duration = self.timeout;
         
-        match task().await {
-            Ok(_) => {
-                let elapsed = start.elapsed();
-                info!("{} took {} ms", description, elapsed.as_millis());
-                
-                if elapsed > timeout {
-                    warn!(
-                        "{} took too long ({} ms) running task: {}",
-                        name,
-                        elapsed.as_millis(),
-                        description
-                    );
-                }
-            }
-            Err(e) => {
-                error!(
-                    "{} caught exception in scheduled task: {}: {}",
-                    name, description, e
-                );
-            }
-        }
-    }
-
-    /// 关闭调度器，停止所有任务
-    ///
-    /// # 注意
-    /// - 设置关闭标志，阻止新任务执行
-    /// - 等待所有后台任务完成或超
-    /// - 如果关闭超时，会记录错误日志
-    ///
-    /// # 示例
-    /// ```
-    /// use std::time::Duration;
-    /// let scheduler = Scheduler::new("Test".to_string(), Duration::from_secs(30));
-    /// scheduler.close().await;
-    /// ```
-    pub async fn close(&self) {
-        // 设置关闭标志
-        {
-            let mut closed = self.closed.lock().await;
-            *closed = true;
-        }
-
-        // 等待所有任务完成
-        let handles = self.task_handles.lock().await;
-        let timeout_result = tokio::time::timeout(self.timeout, async {
-            for handle in handles.iter() {
-                handle.await.ok();
-            }
-        })
-        .await;
-
-        match timeout_result {
-            Ok(_) => {
-                info!("{} shutdown completed successfully", self.name);
+        // Execute task with timeout
+        let result = timeout(timeout_duration, task()).await;
+        
+        match result {
+            Ok(inner_result) => {
+                inner_result.map_err(|e| anyhow!("Task {} failed: {}", task_name, e))
             }
             Err(_) => {
-                error!(
-                    "{} timed out during shutdown of internal scheduler",
-                    self.name
-                );
+                Err(anyhow!("Task {} timed out after {:?}", task_name, timeout_duration))
             }
+        }
+    }
+
+    /// Executes a one-off task with custom timeout.
+    /// 
+    /// # Arguments
+    /// * `task` - Async task to execute
+    /// * `description` - Description for logging
+    /// * `timeout_duration` - Custom timeout duration
+    pub async fn execute_with_timeout(
+        &self, 
+        task: AsyncTask, 
+        description: &str,
+        timeout_duration: Duration
+    ) -> Result<()> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(anyhow!("Scheduler {} is stopped, cannot execute task: {}", self.name, description));
+        }
+
+        let task_name = format!("{}-{}", self.name, description);
+        
+        let result = timeout(timeout_duration, task()).await;
+        
+        match result {
+            Ok(inner_result) => {
+                inner_result.map_err(|e| anyhow!("Task {} failed: {}", task_name, e))
+            }
+            Err(_) => {
+                Err(anyhow!("Task {} timed out after {:?}", task_name, timeout_duration))
+            }
+        }
+    }
+
+    /// Schedules a task to run repeatedly at fixed interval, starting immediately.
+    /// 
+    /// Equivalent to Java's `scheduleRepeating(Task task, Duration interval, String description)`.
+    /// 
+    /// # Arguments
+    /// * `task` - Async task to execute repeatedly
+    /// * `interval_duration` - Interval between successive executions
+    /// * `description` - Description for logging
+    /// 
+    /// # Returns
+    /// Task ID that can be used to cancel the task
+    /// 
+    /// # Note
+    /// The first execution starts immediately. If interval is zero or negative,
+    /// no task is scheduled and 0 is returned.
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let task_id = scheduler.schedule_repeating(
+    ///     Box::new(|| Box::pin(async { 
+    ///         println!("Repeating task");
+    ///         Ok(())
+    ///     })),
+    ///     Duration::from_secs(60),
+    ///     "sync-configs"
+    /// );
+    /// ```
+    pub fn schedule_repeating(
+        &self,
+        task: AsyncTask,
+        interval_duration: Duration,
+        description: &str
+    ) -> TaskId {
+        if interval_duration.is_zero() {
+            return 0;
+        }
+
+        self.schedule_internal(task, interval_duration, Duration::ZERO, description)
+    }
+
+    /// Schedules a task to run repeatedly at fixed interval with initial delay.
+    /// 
+    /// Equivalent to Java's `scheduleRepeatingDelayed(Task task, Duration interval, String description)`.
+    /// 
+    /// # Arguments
+    /// * `task` - Async task to execute repeatedly
+    /// * `interval_duration` - Interval between successive executions (also used as initial delay)
+    /// * `description` - Description for logging
+    /// 
+    /// # Returns
+    /// Task ID that can be used to cancel the task
+    /// 
+    /// # Note
+    /// The first execution is delayed by `interval_duration`. If interval is zero or negative,
+    /// no task is scheduled and 0 is returned.
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let task_id = scheduler.schedule_repeating_delayed(
+    ///     Box::new(|| Box::pin(async { 
+    ///         println!("Delayed repeating task");
+    ///         Ok(())
+    ///     })),
+    ///     Duration::from_secs(60),
+    ///     "refresh-groups"
+    /// );
+    /// ```
+    pub fn schedule_repeating_delayed(
+        &self,
+        task: AsyncTask,
+        interval_duration: Duration,
+        description: &str
+    ) -> TaskId {
+        if interval_duration.is_zero() {
+            return 0;
+        }
+
+        self.schedule_internal(task, interval_duration, interval_duration, description)
+    }
+
+    /// Internal method to schedule repeating tasks.
+    /// 
+    /// # Arguments
+    /// * `task` - Async task to execute
+    /// * `interval_duration` - Interval between executions
+    /// * `initial_delay` - Initial delay before first execution
+    /// * `description` - Description for logging
+    fn schedule_internal(
+        &self,
+        task: AsyncTask,
+        interval_duration: Duration,
+        initial_delay: Duration,
+        description: &str
+    ) -> TaskId {
+        if self.stopped.load(Ordering::SeqCst) {
+            return 0;
+        }
+
+        let task_id = self.next_id();
+        let task_name = format!("{}-{}-{}", self.name, description, task_id);
+        let stopped = self.stopped.clone();
+        let task_arc = Arc::new(task);
+
+        // Spawn async task
+        let handle: JoinHandle<()> = tokio::spawn(async move {
+            // Wait for initial delay if specified
+            if !initial_delay.is_zero() {
+                sleep(initial_delay).await;
+            }
+
+            // Create interval ticker
+            let mut ticker = interval(interval_duration);
+            
+            // Skip the first immediate tick if we already delayed
+            if !initial_delay.is_zero() {
+                ticker.tick().await;
+            }
+
+            loop {
+                // Check if scheduler is stopped
+                if stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Wait for next tick
+                ticker.tick().await;
+
+                // Check again after tick (scheduler might have been stopped during wait)
+                if stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Execute task
+                let task_clone = task_arc.clone();
+                let result = task_clone().await;
+                
+                if let Err(e) = result {
+                    // Log error but continue running (matches Kafka behavior)
+                    eprintln!("Scheduled task {} error: {}", task_name, e);
+                }
+            }
+        });
+
+        // Register handle for cancellation
+        self.register_handle(task_id, handle.abort_handle());
+
+        // Spawn cleanup task to unregister when task completes
+        let handles = self.task_handles.clone();
+        let id = task_id;
+        tokio::spawn(async move {
+            handle.await.ok();
+            handles.lock().unwrap().remove(&id);
+        });
+
+        task_id
+    }
+
+    /// Stops the scheduler and cancels all scheduled tasks.
+    /// 
+    /// Equivalent to closing the scheduler in Java.
+    /// 
+    /// After calling stop(), no new tasks can be scheduled and all
+    /// existing scheduled tasks are cancelled.
+    pub fn stop(&self) {
+        // Mark scheduler as stopped
+        self.stopped.store(true, Ordering::SeqCst);
+
+        // Abort all scheduled tasks
+        let handles = self.task_handles.lock().unwrap();
+        for (_, handle) in handles.iter() {
+            handle.abort();
+        }
+    }
+
+    /// Stops the scheduler and waits for all tasks to complete.
+    /// 
+    /// # Arguments
+    /// * `wait_timeout` - Maximum time to wait for tasks to complete
+    pub async fn stop_and_wait(&self, wait_timeout: Duration) -> Result<()> {
+        self.stop();
+
+        // Wait a short period for tasks to be aborted
+        sleep(wait_timeout).await;
+
+        Ok(())
+    }
+
+    /// Checks if the scheduler is stopped.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Gets the scheduler name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the default timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Cancels a specific scheduled task by ID.
+    /// 
+    /// # Arguments
+    /// * `task_id` - ID of the task to cancel
+    /// 
+    /// # Returns
+    /// true if task was found and cancelled, false otherwise
+    pub fn cancel_task(&self, task_id: TaskId) -> bool {
+        let mut handles = self.task_handles.lock().unwrap();
+        if let Some(handle) = handles.remove(&task_id) {
+            handle.abort();
+            true
+        } else {
+            false
         }
     }
 }
 
 impl Drop for Scheduler {
-    /// Drop 实现，确保资源被清理
     fn drop(&mut self) {
-        // 注意：Drop trait 不能是 async，所以我们只能记录日志
-        // 实际的清理工作应该在 close() 方法中完成
-        info!("{} scheduler dropped", self.name);
+        self.stop();
+    }
+}
+
+/// Builder for creating Scheduler instances.
+pub struct SchedulerBuilder {
+    name: String,
+    timeout: Duration,
+}
+
+impl SchedulerBuilder {
+    /// Creates a new builder.
+    pub fn new(name: String) -> Self {
+        SchedulerBuilder {
+            name,
+            timeout: Duration::from_secs(30), // Default timeout
+        }
+    }
+
+    /// Sets the timeout duration.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Builds the Scheduler.
+    pub fn build(self) -> Scheduler {
+        Scheduler::new(self.name, self.timeout)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use tokio::test;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
 
-    #[tokio::test]
-    async fn test_scheduler_creation() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-        assert_eq!(scheduler.name, "TestScheduler");
-        assert_eq!(scheduler.timeout, Duration::from_secs(30));
+    #[test]
+    async fn test_scheduler_new() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        assert_eq!(scheduler.name(), "test");
+        assert_eq!(scheduler.timeout(), Duration::from_secs(10));
+        assert!(!scheduler.is_stopped());
     }
 
-    #[tokio::test]
-    async fn test_scheduler_with_class_and_role() {
-        let scheduler =
-            Scheduler::with_class_and_role("MirrorMaker", "Replication", Duration::from_secs(30));
-        assert_eq!(scheduler.name, "Scheduler for MirrorMaker: Replication");
+    #[test]
+    async fn test_scheduler_builder() {
+        let scheduler = SchedulerBuilder::new("test-builder".to_string())
+            .timeout(Duration::from_secs(60))
+            .build();
+        assert_eq!(scheduler.name(), "test-builder");
+        assert_eq!(scheduler.timeout(), Duration::from_secs(60));
     }
 
-    #[tokio::test]
-    async fn test_execute() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-        let executed = Arc::new(AtomicBool::new(false));
-        let executed_clone = executed.clone();
-
-        scheduler.execute(
-            move || {
-                let executed = executed_clone.clone();
-                async move {
-                    executed.store(true, Ordering::SeqCst);
-                    Ok(())
-                }
-            },
-            "Test task".to_string(),
-        );
-
-        // 等待任务执行
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(executed.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn test_execute_async() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-        let executed = Arc::new(AtomicBool::new(false));
-        let executed_clone = executed.clone();
-
-        scheduler.execute_async(
-            move || {
-                let executed = executed_clone.clone();
-                async move {
-                    executed.store(true, Ordering::SeqCst);
-                    Ok(())
-                }
-            },
-            "Async test task".to_string(),
-        );
-
-        // 等待任务执行
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(executed.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn test_schedule_repeating() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
+    #[test]
+    async fn test_execute_success() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-
-        scheduler.schedule_repeating(
-            move || {
-                let counter = counter_clone.clone();
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }
-            },
-            Duration::from_millis(100),
-            "Repeating task".to_string(),
-        );
-
-        // 等待任务执行几次
-        tokio::time::sleep(Duration::from_millis(350)).await;
-        let count = counter.load(Ordering::SeqCst);
-        assert!(count >= 3, "Expected at least 3 executions, got {}", count);
-    }
-
-    #[tokio::test]
-    async fn test_schedule_repeating_delayed() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = counter.clone();
-
-        scheduler.schedule_repeating_delayed(
-            move || {
-                let counter = counter_clone.clone();
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }
-            },
-            Duration::from_millis(100),
-            "Delayed repeating task".to_string(),
-        );
-
-        // 等待延迟时间 + 几次执行
-        tokio::time::sleep(Duration::from_millis(450)).await;
-        let count = counter.load(Ordering::SeqCst);
-        assert!(count >= 3, "Expected at least 3 executions, got {}", count);
-    }
-
-    #[tokio::test]
-    async fn test_close() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = counter.clone();
-
-        scheduler.schedule_repeating(
-            move || {
-                let counter = counter_clone.clone();
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }
-            },
-            Duration::from_millis(50),
-            "Repeating task".to_string(),
-        );
-
-        // 等待任务执行几次
-        tokio::time::sleep(Duration::from_millis(200)).await;
         
-        // 关闭调度器
-        scheduler.close().await;
-
-        // 等待一段时间，确保任务停止
-        let count_before = counter.load(Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let count_after = counter.load(Ordering::SeqCst);
-
-        // 由于关闭机制，任务应该停止执行
-        // 注意：由于异步特性，可能会有一些延迟
-        assert!(count_after >= count_before);
+        let result = scheduler.execute(
+            Box::new(move || {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+            "increment-counter"
+        ).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn test_execute_with_error() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_secs(30));
-
-        scheduler.execute(
-            || async { Err(anyhow::anyhow!("Test error")) },
-            "Error task".to_string(),
-        );
-
-        // 等待任务执行
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        // 错误应该被记录到日志中
-    }
-
-    #[tokio::test]
-    async fn test_execute_with_timeout() {
-        let scheduler = Scheduler::new("TestScheduler".to_string(), Duration::from_millis(100));
-
-        scheduler.execute(
-            || async {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+    #[test]
+    async fn test_execute_timeout() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_millis(50));
+        
+        let result = scheduler.execute(
+            Box::new(|| Box::pin(async {
+                sleep(Duration::from_secs(10)).await;
                 Ok(())
-            },
-            "Timeout task".to_string(),
-        );
+            })),
+            "slow-task"
+        ).await;
+        
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
 
-        // 等待超时
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        // 超时应该被记录到日志中
+    #[test]
+    async fn test_execute_when_stopped() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        scheduler.stop();
+        
+        let result = scheduler.execute(
+            Box::new(|| Box::pin(async { Ok::<(), anyhow::Error>(()) })),
+            "after-stop"
+        ).await;
+        
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("stopped"));
+    }
+
+    #[test]
+    async fn test_schedule_repeating() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        
+        let task_id = scheduler.schedule_repeating(
+            Box::new(move || {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+            Duration::from_millis(50),
+            "counter-task"
+        );
+        
+        assert!(task_id > 0);
+        
+        // Wait for a few executions
+        sleep(Duration::from_millis(200)).await;
+        
+        let count = counter.load(Ordering::SeqCst);
+        assert!(count >= 3, "Expected at least 3 executions, got {}", count);
+        
+        scheduler.stop();
+    }
+
+    #[test]
+    async fn test_schedule_repeating_delayed() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        
+        let task_id = scheduler.schedule_repeating_delayed(
+            Box::new(move || {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+            Duration::from_millis(100),
+            "delayed-counter"
+        );
+        
+        assert!(task_id > 0);
+        
+        // Wait a bit less than initial delay - counter should still be 0
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        
+        // Wait for initial delay and a few executions
+        sleep(Duration::from_millis(300)).await;
+        
+        let count = counter.load(Ordering::SeqCst);
+        assert!(count >= 2, "Expected at least 2 executions after delay, got {}", count);
+        
+        scheduler.stop();
+    }
+
+    #[test]
+    async fn test_stop_cancels_tasks() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        
+        let _task_id = scheduler.schedule_repeating(
+            Box::new(move || {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    sleep(Duration::from_millis(10)).await;
+                    Ok(())
+                })
+            }),
+            Duration::from_millis(50),
+            "counter-task"
+        );
+        
+        // Let it run a bit
+        sleep(Duration::from_millis(100)).await;
+        let count_before_stop = counter.load(Ordering::SeqCst);
+        
+        // Stop scheduler
+        scheduler.stop();
+        
+        // Wait and verify counter doesn't increase further
+        sleep(Duration::from_millis(150)).await;
+        let count_after_stop = counter.load(Ordering::SeqCst);
+        
+        // Counter should not have increased significantly after stop
+        assert!(count_after_stop <= count_before_stop + 1);
+    }
+
+    #[test]
+    async fn test_cancel_specific_task() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        let counter1 = Arc::new(AtomicU32::new(0));
+        let counter2 = Arc::new(AtomicU32::new(0));
+        
+        let c1 = counter1.clone();
+        let task_id1 = scheduler.schedule_repeating(
+            Box::new(move || {
+                let c = c1.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+            Duration::from_millis(50),
+            "task1"
+        );
+        
+        let c2 = counter2.clone();
+        let task_id2 = scheduler.schedule_repeating(
+            Box::new(move || {
+                let c = c2.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+            Duration::from_millis(50),
+            "task2"
+        );
+        
+        // Let both tasks run
+        sleep(Duration::from_millis(100)).await;
+        
+        // Cancel task1 only
+        assert!(scheduler.cancel_task(task_id1));
+        
+        // Wait for more time
+        sleep(Duration::from_millis(150)).await;
+        
+        // counter2 should continue incrementing, counter1 should be stopped
+        let count1 = counter1.load(Ordering::SeqCst);
+        let count2 = counter2.load(Ordering::SeqCst);
+        
+        assert!(count2 > count1, "Task2 should have more executions than cancelled Task1");
+        
+        scheduler.stop();
+    }
+
+    #[test]
+    async fn test_zero_interval_no_task() {
+        let scheduler = Scheduler::new("test".to_string(), Duration::from_secs(10));
+        
+        let task_id = scheduler.schedule_repeating(
+            Box::new(|| Box::pin(async { Ok::<(), anyhow::Error>(()) })),
+            Duration::ZERO,
+            "zero-interval"
+        );
+        
+        assert_eq!(task_id, 0);
     }
 }

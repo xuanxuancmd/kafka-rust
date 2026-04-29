@@ -8,12 +8,11 @@ connect-api = { path = "../connect-api" }
 connect-mirror-client = { path = "../connect-mirror-client" }
 connect-runtime = { path = "../connect-runtime" }
 common-trait = { path = "../common-trait" }
+kafka-clients-mock = { path = "../kafka-clients-mock" }
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-thiserror = "1.0"
-tracing = "0.1"
 
 [dev-dependencies]
 kafka-clients-mock = { path = "../kafka-clients-mock" }

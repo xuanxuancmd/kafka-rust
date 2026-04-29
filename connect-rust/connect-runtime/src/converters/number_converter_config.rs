@@ -13,103 +13,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Number Converter Configuration
-//!
 //! Configuration options for NumberConverter instances.
+//!
+//! This corresponds to `org.apache.kafka.connect.converters.NumberConverterConfig` in Java.
 
-use std::collections::HashMap;
+use common_trait::config::{AbstractConfig, ConfigDefBuilder};
+use connect_api::storage::{ConverterConfig, TYPE_CONFIG};
 
-/// Configuration options for NumberConverter instances.
-#[derive(Debug, Clone)]
+/// Configuration options for LongConverter, IntegerConverter, ShortConverter,
+/// DoubleConverter, and FloatConverter instances.
+///
+/// This corresponds to `org.apache.kafka.connect.converters.NumberConverterConfig` in Java.
 pub struct NumberConverterConfig {
-    /// Configuration properties
-    configs: HashMap<String, String>,
-    /// Whether this is a key converter
-    is_key: bool,
+    config: AbstractConfig,
 }
 
 impl NumberConverterConfig {
-    /// Create a new NumberConverterConfig.
+    /// Creates the ConfigDef for NumberConverterConfig.
     ///
-    /// # Arguments
-    ///
-    /// * `props` - configuration properties
-    pub fn new(props: HashMap<String, String>) -> Self {
-        Self {
-            configs: props,
-            is_key: false,
-        }
+    /// Corresponds to `NumberConverterConfig.configDef()` in Java.
+    pub fn config_def() -> ConfigDefBuilder {
+        ConverterConfig::new_config_def()
     }
 
-    /// Create a new NumberConverterConfig with is_key flag.
+    /// Creates a new NumberConverterConfig from the given properties.
     ///
-    /// # Arguments
-    ///
-    /// * `props` - configuration properties
-    /// * `is_key` - whether this is a key converter
-    pub fn new_with_type(props: HashMap<String, String>, is_key: bool) -> Self {
-        Self {
-            configs: props,
-            is_key,
-        }
+    /// Corresponds to `NumberConverterConfig(Map<String, ?> props)` in Java.
+    pub fn new(config: AbstractConfig) -> Self {
+        NumberConverterConfig { config }
     }
 
-    /// Get configuration value.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - configuration key
-    ///
-    /// # Returns
-    ///
-    ///  configuration value if present
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.configs.get(key)
-    }
-
-    /// Check if this is a key converter.
-    pub fn is_key(&self) -> bool {
-        self.is_key
-    }
-
-    /// Check if this is a value converter.
-    pub fn is_value(&self) -> bool {
-        !self.is_key
-    }
-}
-
-impl Default for NumberConverterConfig {
-    fn default() -> Self {
-        Self {
-            configs: HashMap::new(),
-            is_key: false,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_number_converter_config_new() {
-        let config = NumberConverterConfig::new(HashMap::new());
-        assert!(!config.is_key());
-        assert!(config.is_value());
-    }
-
-    #[test]
-    fn test_number_converter_config_with_type() {
-        let config = NumberConverterConfig::new_with_type(HashMap::new(), true);
-        assert!(config.is_key());
-        assert!(!config.is_value());
-    }
-
-    #[test]
-    fn test_number_converter_config_get() {
-        let mut props = HashMap::new();
-        props.insert("test.key".to_string(), "test.value".to_string());
-        let config = NumberConverterConfig::new(props);
-        assert_eq!(config.get("test.key"), Some(&"test.value".to_string()));
+    /// Returns the converter type.
+    pub fn type_config(&self) -> Option<&str> {
+        self.config.get_string(TYPE_CONFIG)
     }
 }

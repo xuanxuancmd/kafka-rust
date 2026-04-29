@@ -3,6 +3,7 @@ members = [
     "common-trait",
     "kafka-clients-mock",
     "connect-api",
+    "connect-json",
     "connect-transforms",
     "connect-mirror-client",
     "connect-mirror",

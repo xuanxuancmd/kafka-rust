@@ -13,31 +13,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Short Converter
+//! ShortConverter for short (Int16) conversion.
 //!
-//! Converter and HeaderConverter implementation that only supports serializing to and
-//! deserializing from short values.
-//!
-//! It does support handling nulls. When converting from bytes to Kafka Connect format,
-//! converter will always return an optional INT16 schema.
-//!
-//! This implementation currently does nothing with the topic names or header keys.
+//! This corresponds to `org.apache.kafka.connect.converters.ShortConverter` in Java.
 
-use crate::converters::number_converter::NumberConverter;
-use connect_api::data::{ConnectSchema, Type};
-use std::sync::Arc;
+use common_trait::config::ConfigDef;
+use common_trait::header::Headers;
+use connect_api::data::{ConnectSchema, Schema, SchemaAndValue, SchemaType};
+use connect_api::errors::ConnectError;
+use connect_api::storage::{Converter, HeaderConverter};
+use serde_json::Value;
+use std::collections::HashMap;
 
-/// Converter and HeaderConverter implementation that only supports serializing to and
-/// deserializing from short values.
-pub type ShortConverter = NumberConverter<i16>;
+use crate::converters::number_converter::{
+    extract_i16, optional_schema, NUMBER_CONVERTER_CONFIG_DEF,
+};
+
+/// ShortConverter for short (Int16) values.
+///
+/// This corresponds to `org.apache.kafka.connect.converters.ShortConverter` in Java.
+/// Supports serializing to and deserializing from short values.
+/// When converting from bytes to Kafka Connect format, the converter will always return
+/// an optional INT16 schema.
+pub struct ShortConverter {
+    is_key: bool,
+}
 
 impl ShortConverter {
-    /// Create a new ShortConverter.
+    /// Creates a new ShortConverter.
     pub fn new() -> Self {
-        NumberConverter::new(
-            "short".to_string(),
-            Arc::new(ConnectSchema::new(Type::Int16).with_optional(true)),
-        )
+        ShortConverter { is_key: false }
+    }
+
+    /// Returns the optional Int16 schema.
+    fn optional_int16_schema() -> ConnectSchema {
+        optional_schema(SchemaType::Int16)
     }
 }
 
@@ -47,33 +57,123 @@ impl Default for ShortConverter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use connect_api::storage::Converter;
-
-    #[test]
-    fn test_short_converter_new() {
-        let converter = ShortConverter::new();
-        assert_eq!(converter.type_name(), "short");
+impl Converter for ShortConverter {
+    fn configure(&mut self, _configs: HashMap<String, Value>, is_key: bool) {
+        self.is_key = is_key;
     }
 
-    #[test]
-    fn test_short_converter_from_connect_data() {
-        let mut converter = ShortConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let schema = Arc::new(ConnectSchema::new(Type::Int16));
-        let value: i16 = 42;
-        let result = converter.from_connect_data("test", Some(schema.as_ref()), &value);
-        assert!(result.is_ok());
+    fn from_connect_data(
+        &self,
+        _topic: &str,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        // Handle null value
+        if value.is_none() || value.map(|v| v.is_null()).unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let val = value.unwrap();
+        let i16_val = extract_i16(val)?;
+
+        // Serialize short to bytes (2 bytes, big-endian)
+        Ok(Some(i16_val.to_be_bytes().to_vec()))
     }
 
-    #[test]
-    fn test_short_converter_to_connect_data() {
-        let mut converter = ShortConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let bytes = 42i16.to_le_bytes().to_vec();
-        let result = converter.to_connect_data("test", &bytes);
-        assert!(result.is_ok());
+    fn from_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &mut H,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError>
+    where
+        H: Headers,
+    {
+        self.from_connect_data(_topic, _schema, value)
     }
+
+    fn to_connect_data(
+        &self,
+        _topic: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        // Handle null value
+        if value.is_none() {
+            return Ok(SchemaAndValue::new(
+                Some(Self::optional_int16_schema()),
+                None,
+            ));
+        }
+
+        let bytes = value.unwrap();
+        if bytes.len() != 2 {
+            return Err(ConnectError::data(format!(
+                "Failed to deserialize short: expected 2 bytes, got {}",
+                bytes.len()
+            )));
+        }
+
+        // Deserialize short from bytes (big-endian)
+        let i16_val = i16::from_be_bytes([bytes[0], bytes[1]]);
+
+        Ok(SchemaAndValue::new(
+            Some(Self::optional_int16_schema()),
+            Some(Value::Number(i16_val.into())),
+        ))
+    }
+
+    fn to_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &H,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError>
+    where
+        H: Headers,
+    {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
+}
+
+impl HeaderConverter for ShortConverter {
+    fn configure(&mut self, _configs: HashMap<String, String>, is_key: bool) {
+        self.is_key = is_key;
+    }
+
+    fn from_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        _schema: Option<&dyn Schema>,
+        value: &Value,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let i16_val = extract_i16(value)?;
+        Ok(Some(i16_val.to_be_bytes().to_vec()))
+    }
+
+    fn to_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
 }

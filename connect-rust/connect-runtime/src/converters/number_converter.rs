@@ -13,389 +13,142 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Number Converter
+//! NumberConverter helper module for primitive number type converters.
 //!
-//! Converter and HeaderConverter implementation that supports serializing to and
-//! deserializing from number values.
-//!
-//! This implementation currently does nothing with the topic names or header keys.
+//! This provides common utilities for number converters in Java Kafka Connect style.
 
-use crate::converters::number_converter_config::NumberConverterConfig;
-use connect_api::data::{ConnectSchema, Schema, SchemaAndValue};
-use connect_api::error::{ConnectException, DataException};
-use connect_api::storage::{Converter, ConverterType, HeaderConverter};
-use std::any::Any;
+use common_trait::config::ConfigDef;
+use connect_api::data::{ConnectSchema, SchemaBuilder, SchemaType};
+use connect_api::errors::ConnectError;
+use connect_api::storage::ConverterConfig;
+use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-/// Converter and HeaderConverter implementation that supports serializing to and
-/// deserializing from number values.
-pub struct NumberConverter<T> {
-    /// Configuration
-    config: NumberConverterConfig,
-    /// Type name for error messages
-    type_name: String,
-    /// Schema for deserialized values
-    schema: Arc<ConnectSchema>,
-    /// Phantom data for generic type
-    _phantom: std::marker::PhantomData<T>,
-}
+/// Static ConfigDef for NumberConverter.
+pub struct NumberConverterConfigDef;
 
-impl<T> NumberConverter<T> {
-    /// Create a new NumberConverter.
-    ///
-    /// # Arguments
-    ///
-    /// * `type_name` - the displayable name of the type
-    /// * `schema` - the optional schema to be used for all deserialized forms
-    pub fn new(type_name: String, schema: Arc<ConnectSchema>) -> Self {
-        Self {
-            config: NumberConverterConfig::default(),
-            type_name,
-            schema,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Create a new NumberConverter with configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `type_name` - the displayable name of the type
-    /// * `schema` - the optional schema to be used for all deserialized forms
-    /// * `config` - converter configuration
-    pub fn with_config(
-        type_name: String,
-        schema: Arc<ConnectSchema>,
-        config: NumberConverterConfig,
-    ) -> Self {
-        Self {
-            config,
-            type_name,
-            schema,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Get type name.
-    pub fn type_name(&self) -> &str {
-        &self.type_name
-    }
-
-    /// Get schema.
-    pub fn schema(&self) -> Arc<ConnectSchema> {
-        Arc::clone(&self.schema)
+impl ConfigDef for NumberConverterConfigDef {
+    fn config_def(&self) -> HashMap<String, common_trait::config::ConfigValueEntry> {
+        ConverterConfig::new_config_def()
+            .build()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_config_value_entry()))
+            .collect()
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Default for NumberConverter<T> {
-    fn default() -> Self {
-        Self {
-            config: NumberConverterConfig::default(),
-            type_name: "number".to_string(),
-            schema: Arc::new(ConnectSchema::new(connect_api::data::Type::Int64)),
-            _phantom: std::marker::PhantomData,
-        }
+pub static NUMBER_CONVERTER_CONFIG_DEF: NumberConverterConfigDef = NumberConverterConfigDef;
+
+/// Creates an optional schema for the given type.
+pub fn optional_schema(schema_type: SchemaType) -> ConnectSchema {
+    SchemaBuilder::type_builder(schema_type).optional().build()
+}
+
+/// Extracts boolean value from JSON Value.
+pub fn extract_bool(value: &Value) -> Result<bool, ConnectError> {
+    match value {
+        Value::Bool(b) => Ok(*b),
+        _ => Err(ConnectError::data(format!(
+            "BooleanConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Converter for NumberConverter<T> {
-    fn configure(&mut self, configs: HashMap<String, String>, is_key: bool) {
-        self.config = NumberConverterConfig::new_with_type(configs, is_key);
-    }
-
-    fn from_connect_data(
-        &self,
-        _topic: &str,
-        _schema: Option<&dyn Schema>,
-        value: &dyn Any,
-    ) -> Result<Vec<u8>, ConnectException> {
-        // Try to cast value to the expected type
-        if value.is::<()>() {
-            // Null value - return empty bytes
-            return Ok(vec![]);
-        }
-
-        // Serialize based on type
-        self.serialize_value(value)
-    }
-
-    fn to_connect_data(
-        &self,
-        _topic: &str,
-        value: &[u8],
-    ) -> Result<SchemaAndValue, ConnectException> {
-        let deserialized = self.deserialize_value(value)?;
-        Ok(SchemaAndValue::new(
-            Some(Arc::clone(&self.schema)),
-            deserialized,
-        ))
+/// Extracts i64 value from JSON Value (for Int64).
+pub fn extract_i64(value: &Value) -> Result<i64, ConnectError> {
+    match value {
+        Value::Number(n) => n
+            .as_i64()
+            .ok_or_else(|| ConnectError::data(format!("Cannot convert to i64: {}", value))),
+        _ => Err(ConnectError::data(format!(
+            "LongConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> HeaderConverter for NumberConverter<T> {
-    fn to_connect_header(
-        &self,
-        topic: &str,
-        _header_key: &str,
-        value: &[u8],
-    ) -> Result<SchemaAndValue, ConnectException> {
-        self.to_connect_data(topic, value)
-    }
-
-    fn from_connect_header(
-        &self,
-        topic: &str,
-        _header_key: &str,
-        schema: Option<&dyn Schema>,
-        value: &dyn Any,
-    ) -> Result<Option<Vec<u8>>, ConnectException> {
-        let bytes = self.from_connect_data(topic, schema, value)?;
-        Ok(Some(bytes))
+/// Extracts i32 value from JSON Value (for Int32).
+pub fn extract_i32(value: &Value) -> Result<i32, ConnectError> {
+    match value {
+        Value::Number(n) => n
+            .as_i64()
+            .and_then(|v| {
+                if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+                    Some(v as i32)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ConnectError::data(format!("Cannot convert to i32: {}", value))),
+        _ => Err(ConnectError::data(format!(
+            "IntegerConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl NumberConverter<i32> {
-    fn serialize_value(&self, value: &dyn Any) -> Result<Vec<u8>, ConnectException> {
-        if let Some(v) = value.downcast_ref::<i32>() {
-            Ok(v.to_le_bytes().to_vec())
-        } else {
-            Err(DataException::new(format!(
-                "Failed to serialize to {} (was unknown type)",
-                self.type_name
-            ))
-            .into())
-        }
-    }
-
-    fn deserialize_value(
-        &self,
-        value: &[u8],
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() < 4 {
-            return Err(ConnectException::new(format!(
-                "Failed to deserialize {}: insufficient bytes",
-                self.type_name
-            )));
-        }
-
-        let bytes = [value[0], value[1], value[2], value[3]];
-        let v = i32::from_le_bytes(bytes);
-        Ok(Some(Box::new(v) as Box<dyn Any + Send + Sync>))
+/// Extracts i16 value from JSON Value (for Int16/Short).
+pub fn extract_i16(value: &Value) -> Result<i16, ConnectError> {
+    match value {
+        Value::Number(n) => n
+            .as_i64()
+            .and_then(|v| {
+                if v >= i16::MIN as i64 && v <= i16::MAX as i64 {
+                    Some(v as i16)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ConnectError::data(format!("Cannot convert to i16: {}", value))),
+        _ => Err(ConnectError::data(format!(
+            "ShortConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl NumberConverter<i64> {
-    fn serialize_value(&self, value: &dyn Any) -> Result<Vec<u8>, ConnectException> {
-        if let Some(v) = value.downcast_ref::<i64>() {
-            Ok(v.to_le_bytes().to_vec())
-        } else {
-            Err(DataException::new(format!(
-                "Failed to serialize to {} (was unknown type)",
-                self.type_name
-            ))
-            .into())
-        }
-    }
-
-    fn deserialize_value(
-        &self,
-        value: &[u8],
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() < 8 {
-            return Err(ConnectException::new(format!(
-                "Failed to deserialize {}: insufficient bytes",
-                self.type_name
-            )));
-        }
-
-        let bytes = [
-            value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
-        ];
-        let v = i64::from_le_bytes(bytes);
-        Ok(Some(Box::new(v) as Box<dyn Any + Send + Sync>))
+/// Extracts f64 value from JSON Value (for Float64/Double).
+pub fn extract_f64(value: &Value) -> Result<f64, ConnectError> {
+    match value {
+        Value::Number(n) => n
+            .as_f64()
+            .ok_or_else(|| ConnectError::data(format!("Cannot convert to f64: {}", value))),
+        _ => Err(ConnectError::data(format!(
+            "DoubleConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl NumberConverter<i16> {
-    fn serialize_value(&self, value: &dyn Any) -> Result<Vec<u8>, ConnectException> {
-        if let Some(v) = value.downcast_ref::<i16>() {
-            Ok(v.to_le_bytes().to_vec())
-        } else {
-            Err(DataException::new(format!(
-                "Failed to serialize to {} (was unknown type)",
-                self.type_name
-            ))
-            .into())
-        }
-    }
-
-    fn deserialize_value(
-        &self,
-        value: &[u8],
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() < 2 {
-            return Err(ConnectException::new(format!(
-                "Failed to deserialize {}: insufficient bytes",
-                self.type_name
-            )));
-        }
-
-        let bytes = [value[0], value[1]];
-        let v = i16::from_le_bytes(bytes);
-        Ok(Some(Box::new(v) as Box<dyn Any + Send + Sync>))
+/// Extracts f32 value from JSON Value (for Float32/Float).
+pub fn extract_f32(value: &Value) -> Result<f32, ConnectError> {
+    match value {
+        Value::Number(n) => n
+            .as_f64()
+            .and_then(|v| {
+                if v >= f32::MIN as f64 && v <= f32::MAX as f64 {
+                    Some(v as f32)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ConnectError::data(format!("Cannot convert to f32: {}", value))),
+        _ => Err(ConnectError::data(format!(
+            "FloatConverter is not compatible with objects of type {}",
+            value_type_name(value)
+        ))),
     }
 }
 
-impl NumberConverter<f64> {
-    fn serialize_value(&self, value: &dyn Any) -> Result<Vec<u8>, ConnectException> {
-        if let Some(v) = value.downcast_ref::<f64>() {
-            Ok(v.to_le_bytes().to_vec())
-        } else {
-            Err(DataException::new(format!(
-                "Failed to serialize to {} (was unknown type)",
-                self.type_name
-            ))
-            .into())
-        }
-    }
-
-    fn deserialize_value(
-        &self,
-        value: &[u8],
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() < 8 {
-            return Err(ConnectException::new(format!(
-                "Failed to deserialize {}: insufficient bytes",
-                self.type_name
-            )));
-        }
-
-        let bytes = [
-            value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
-        ];
-        let v = f64::from_le_bytes(bytes);
-        Ok(Some(Box::new(v) as Box<dyn Any + Send + Sync>))
-    }
-}
-
-impl NumberConverter<f32> {
-    fn serialize_value(&self, value: &dyn Any) -> Result<Vec<u8>, ConnectException> {
-        if let Some(v) = value.downcast_ref::<f32>() {
-            Ok(v.to_le_bytes().to_vec())
-        } else {
-            Err(DataException::new(format!(
-                "Failed to serialize to {} (was unknown type)",
-                self.type_name
-            ))
-            .into())
-        }
-    }
-
-    fn deserialize_value(
-        &self,
-        value: &[u8],
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, ConnectException> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-
-        if value.len() < 4 {
-            return Err(ConnectException::new(format!(
-                "Failed to deserialize {}: insufficient bytes",
-                self.type_name
-            )));
-        }
-
-        let bytes = [value[0], value[1], value[2], value[3]];
-        let v = f32::from_le_bytes(bytes);
-        Ok(Some(Box::new(v) as Box<dyn Any + Send + Sync>))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use connect_api::data::Type;
-
-    #[test]
-    fn test_number_converter_new() {
-        let schema = Arc::new(ConnectSchema::new(Type::Int64));
-        let converter = NumberConverter::<i64>::new("long".to_string(), schema);
-        assert_eq!(converter.type_name(), "long");
-    }
-
-    #[test]
-    fn test_i32_serialize() {
-        let schema = Arc::new(ConnectSchema::new(Type::Int32));
-        let converter = NumberConverter::<i32>::new("integer".to_string(), schema);
-        let value: i32 = 42;
-        let result = converter.serialize_value(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42i32.to_le_bytes().to_vec());
-    }
-
-    #[test]
-    fn test_i32_deserialize() {
-        let schema = Arc::new(ConnectSchema::new(Type::Int32));
-        let converter = NumberConverter::<i32>::new("integer".to_string(), schema);
-        let bytes = 42i32.to_le_bytes().to_vec();
-        let result = converter.deserialize_value(&bytes);
-        assert!(result.is_ok());
-        if let Some(v) = result.unwrap() {
-            if let Some(i) = v.downcast_ref::<i32>() {
-                assert_eq!(*i, 42);
-            } else {
-                panic!("Failed to downcast to i32");
-            }
-        } else {
-            panic!("Deserialized value is None");
-        }
-    }
-
-    #[test]
-    fn test_i64_serialize() {
-        let schema = Arc::new(ConnectSchema::new(Type::Int64));
-        let converter = NumberConverter::<i64>::new("long".to_string(), schema);
-        let value: i64 = 42;
-        let result = converter.serialize_value(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42i64.to_le_bytes().to_vec());
-    }
-
-    #[test]
-    fn test_f64_serialize() {
-        let schema = Arc::new(ConnectSchema::new(Type::Float64));
-        let converter = NumberConverter::<f64>::new("double".to_string(), schema);
-        let value: f64 = 42.5;
-        let result = converter.serialize_value(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42.5f64.to_le_bytes().to_vec());
-    }
-
-    #[test]
-    fn test_f32_serialize() {
-        let schema = Arc::new(ConnectSchema::new(Type::Float32));
-        let converter = NumberConverter::<f32>::new("float".to_string(), schema);
-        let value: f32 = 42.5;
-        let result = converter.serialize_value(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42.5f32.to_le_bytes().to_vec());
+/// Returns the type name for a JSON value.
+fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }

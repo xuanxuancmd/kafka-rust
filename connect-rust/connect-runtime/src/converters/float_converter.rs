@@ -13,31 +13,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Float Converter
+//! FloatConverter for float (Float32) conversion.
 //!
-//! Converter and HeaderConverter implementation that only supports serializing to and
-//! deserializing from float values.
-//!
-//! It does support handling nulls. When converting from bytes to Kafka Connect format,
-//! converter will always return an optional FLOAT32 schema.
-//!
-//! This implementation currently does nothing with the topic names or header keys.
+//! This corresponds to `org.apache.kafka.connect.converters.FloatConverter` in Java.
 
-use crate::converters::number_converter::NumberConverter;
-use connect_api::data::{ConnectSchema, Type};
-use std::sync::Arc;
+use common_trait::config::ConfigDef;
+use common_trait::header::Headers;
+use connect_api::data::{ConnectSchema, Schema, SchemaAndValue, SchemaType};
+use connect_api::errors::ConnectError;
+use connect_api::storage::{Converter, HeaderConverter};
+use serde_json::Value;
+use std::collections::HashMap;
 
-/// Converter and HeaderConverter implementation that only supports serializing to and
-/// deserializing from float values.
-pub type FloatConverter = NumberConverter<f32>;
+use crate::converters::number_converter::{
+    extract_f32, optional_schema, NUMBER_CONVERTER_CONFIG_DEF,
+};
+
+/// FloatConverter for float (Float32) values.
+///
+/// This corresponds to `org.apache.kafka.connect.converters.FloatConverter` in Java.
+/// Supports serializing to and deserializing from float values.
+/// When converting from bytes to Kafka Connect format, the converter will always return
+/// an optional FLOAT32 schema.
+pub struct FloatConverter {
+    is_key: bool,
+}
 
 impl FloatConverter {
-    /// Create a new FloatConverter.
+    /// Creates a new FloatConverter.
     pub fn new() -> Self {
-        NumberConverter::new(
-            "float".to_string(),
-            Arc::new(ConnectSchema::new(Type::Float32).with_optional(true)),
-        )
+        FloatConverter { is_key: false }
+    }
+
+    /// Returns the optional Float32 schema.
+    fn optional_float32_schema() -> ConnectSchema {
+        optional_schema(SchemaType::Float32)
     }
 }
 
@@ -47,33 +57,126 @@ impl Default for FloatConverter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use connect_api::storage::Converter;
-
-    #[test]
-    fn test_float_converter_new() {
-        let converter = FloatConverter::new();
-        assert_eq!(converter.type_name(), "float");
+impl Converter for FloatConverter {
+    fn configure(&mut self, _configs: HashMap<String, Value>, is_key: bool) {
+        self.is_key = is_key;
     }
 
-    #[test]
-    fn test_float_converter_from_connect_data() {
-        let mut converter = FloatConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let schema = Arc::new(ConnectSchema::new(Type::Float32));
-        let value: f32 = 42.5;
-        let result = converter.from_connect_data("test", Some(schema.as_ref()), &value);
-        assert!(result.is_ok());
+    fn from_connect_data(
+        &self,
+        _topic: &str,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        // Handle null value
+        if value.is_none() || value.map(|v| v.is_null()).unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let val = value.unwrap();
+        let f32_val = extract_f32(val)?;
+
+        // Serialize float to bytes (4 bytes, big-endian)
+        Ok(Some(f32_val.to_be_bytes().to_vec()))
     }
 
-    #[test]
-    fn test_float_converter_to_connect_data() {
-        let mut converter = FloatConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let bytes = 42.5f32.to_le_bytes().to_vec();
-        let result = converter.to_connect_data("test", &bytes);
-        assert!(result.is_ok());
+    fn from_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &mut H,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError>
+    where
+        H: Headers,
+    {
+        self.from_connect_data(_topic, _schema, value)
     }
+
+    fn to_connect_data(
+        &self,
+        _topic: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        // Handle null value
+        if value.is_none() {
+            return Ok(SchemaAndValue::new(
+                Some(Self::optional_float32_schema()),
+                None,
+            ));
+        }
+
+        let bytes = value.unwrap();
+        if bytes.len() != 4 {
+            return Err(ConnectError::data(format!(
+                "Failed to deserialize float: expected 4 bytes, got {}",
+                bytes.len()
+            )));
+        }
+
+        // Deserialize float from bytes (big-endian)
+        let f32_val = f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+
+        Ok(SchemaAndValue::new(
+            Some(Self::optional_float32_schema()),
+            Some(Value::Number(
+                serde_json::Number::from_f64(f32_val as f64)
+                    .unwrap_or_else(|| serde_json::Number::from(0)),
+            )),
+        ))
+    }
+
+    fn to_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &H,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError>
+    where
+        H: Headers,
+    {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
+}
+
+impl HeaderConverter for FloatConverter {
+    fn configure(&mut self, _configs: HashMap<String, String>, is_key: bool) {
+        self.is_key = is_key;
+    }
+
+    fn from_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        _schema: Option<&dyn Schema>,
+        value: &Value,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let f32_val = extract_f32(value)?;
+        Ok(Some(f32_val.to_be_bytes().to_vec()))
+    }
+
+    fn to_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
 }

@@ -13,31 +13,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Integer Converter
+//! IntegerConverter for integer (Int32) conversion.
 //!
-//! Converter and HeaderConverter implementation that only supports serializing to and
-//! deserializing from integer values.
-//!
-//! It does support handling nulls. When converting from bytes to Kafka Connect format,
-//! the converter will always return an optional INT32 schema.
-//!
-//! This implementation currently does nothing with the topic names or header keys.
+//! This corresponds to `org.apache.kafka.connect.converters.IntegerConverter` in Java.
 
-use crate::converters::number_converter::NumberConverter;
-use connect_api::data::{ConnectSchema, Type};
-use std::sync::Arc;
+use common_trait::config::ConfigDef;
+use common_trait::header::Headers;
+use connect_api::data::{ConnectSchema, Schema, SchemaAndValue, SchemaType};
+use connect_api::errors::ConnectError;
+use connect_api::storage::{Converter, HeaderConverter};
+use serde_json::Value;
+use std::collections::HashMap;
 
-/// Converter and HeaderConverter implementation that only supports serializing to and
-/// deserializing from integer values.
-pub type IntegerConverter = NumberConverter<i32>;
+use crate::converters::number_converter::{
+    extract_i32, optional_schema, NUMBER_CONVERTER_CONFIG_DEF,
+};
+
+/// IntegerConverter for integer (Int32) values.
+///
+/// This corresponds to `org.apache.kafka.connect.converters.IntegerConverter` in Java.
+/// Supports serializing to and deserializing from integer values.
+/// When converting from bytes to Kafka Connect format, the converter will always return
+/// an optional INT32 schema.
+pub struct IntegerConverter {
+    is_key: bool,
+}
 
 impl IntegerConverter {
-    /// Create a new IntegerConverter.
+    /// Creates a new IntegerConverter.
     pub fn new() -> Self {
-        NumberConverter::new(
-            "integer".to_string(),
-            Arc::new(ConnectSchema::new(Type::Int32).with_optional(true)),
-        )
+        IntegerConverter { is_key: false }
+    }
+
+    /// Returns the optional Int32 schema.
+    fn optional_int32_schema() -> ConnectSchema {
+        optional_schema(SchemaType::Int32)
     }
 }
 
@@ -47,33 +57,123 @@ impl Default for IntegerConverter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use connect_api::storage::Converter;
-
-    #[test]
-    fn test_integer_converter_new() {
-        let converter = IntegerConverter::new();
-        assert_eq!(converter.type_name(), "integer");
+impl Converter for IntegerConverter {
+    fn configure(&mut self, _configs: HashMap<String, Value>, is_key: bool) {
+        self.is_key = is_key;
     }
 
-    #[test]
-    fn test_integer_converter_from_connect_data() {
-        let mut converter = IntegerConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let schema = Arc::new(ConnectSchema::new(Type::Int32));
-        let value: i32 = 42;
-        let result = converter.from_connect_data("test", Some(schema.as_ref()), &value);
-        assert!(result.is_ok());
+    fn from_connect_data(
+        &self,
+        _topic: &str,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        // Handle null value
+        if value.is_none() || value.map(|v| v.is_null()).unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let val = value.unwrap();
+        let i32_val = extract_i32(val)?;
+
+        // Serialize integer to bytes (4 bytes, big-endian)
+        Ok(Some(i32_val.to_be_bytes().to_vec()))
     }
 
-    #[test]
-    fn test_integer_converter_to_connect_data() {
-        let mut converter = IntegerConverter::new();
-        converter.configure(std::collections::HashMap::new(), false);
-        let bytes = 42i32.to_le_bytes().to_vec();
-        let result = converter.to_connect_data("test", &bytes);
-        assert!(result.is_ok());
+    fn from_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &mut H,
+        _schema: Option<&dyn Schema>,
+        value: Option<&Value>,
+    ) -> Result<Option<Vec<u8>>, ConnectError>
+    where
+        H: Headers,
+    {
+        self.from_connect_data(_topic, _schema, value)
     }
+
+    fn to_connect_data(
+        &self,
+        _topic: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        // Handle null value
+        if value.is_none() {
+            return Ok(SchemaAndValue::new(
+                Some(Self::optional_int32_schema()),
+                None,
+            ));
+        }
+
+        let bytes = value.unwrap();
+        if bytes.len() != 4 {
+            return Err(ConnectError::data(format!(
+                "Failed to deserialize integer: expected 4 bytes, got {}",
+                bytes.len()
+            )));
+        }
+
+        // Deserialize integer from bytes (big-endian)
+        let i32_val = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+
+        Ok(SchemaAndValue::new(
+            Some(Self::optional_int32_schema()),
+            Some(Value::Number(i32_val.into())),
+        ))
+    }
+
+    fn to_connect_data_with_headers<H>(
+        &self,
+        _topic: &str,
+        _headers: &H,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError>
+    where
+        H: Headers,
+    {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
+}
+
+impl HeaderConverter for IntegerConverter {
+    fn configure(&mut self, _configs: HashMap<String, String>, is_key: bool) {
+        self.is_key = is_key;
+    }
+
+    fn from_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        _schema: Option<&dyn Schema>,
+        value: &Value,
+    ) -> Result<Option<Vec<u8>>, ConnectError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let i32_val = extract_i32(value)?;
+        Ok(Some(i32_val.to_be_bytes().to_vec()))
+    }
+
+    fn to_connect_header(
+        &self,
+        _topic: &str,
+        _header_key: &str,
+        value: Option<&[u8]>,
+    ) -> Result<SchemaAndValue, ConnectError> {
+        self.to_connect_data(_topic, value)
+    }
+
+    fn config(&self) -> &'static dyn ConfigDef {
+        &NUMBER_CONVERTER_CONFIG_DEF
+    }
+
+    fn close(&mut self) {}
 }

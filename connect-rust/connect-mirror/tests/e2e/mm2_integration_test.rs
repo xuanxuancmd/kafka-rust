@@ -1,625 +1,894 @@
-//! End-to-End MM2 Integration Tests
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// contributor license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright ownership.
+// The ASF licenses this file to You under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with
+// the License. You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! End-to-end integration tests for MirrorMaker 2.0.
 //!
-//! These tests validate complete MM2 replication flow including:
-//! - Basic topic replication
-//! - Offset synchronization
-//! - Checkpoint management
-//! - Failover scenarios
-//! - Exactly-once semantics
+//! This module tests the complete MirrorMaker lifecycle without requiring
+//! a real Kafka cluster. Uses mock implementations for Kafka clients.
+//!
+//! Test scenarios:
+//! - MirrorMakerConfig creation (cluster A->B configuration)
+//! - MirrorMaker construction and lifecycle
+//! - Connector configuration validation
+//! - Start/Stop MirrorMaker
+//!
+//! Corresponds to Java: MirrorConnectorsIntegrationBaseTest (partial)
 
-use kafka_clients_mock::{MockProducer, MockConsumer, MockAdminClient};
-use kafka_clients_mock::consumer::MockConsumerRecord;
-use common_trait::producer::{KafkaProducer, ProducerRecord};
-use common_trait::consumer::{KafkaConsumer, TopicPartition};
-use common_trait::admin::{KafkaAdmin, NewTopic};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::time::sleep;
 
-/// Test configuration constants
-const NUM_RECORDS_PER_PARTITION: i32 = 10;
-const NUM_PARTITIONS: i32 = 10;
-const NUM_RECORDS_PRODUCED: i32 = NUM_PARTITIONS * NUM_RECORDS_PER_PARTITION;
-const PRIMARY_CLUSTER_ALIAS: &str = "primary";
-const BACKUP_CLUSTER_ALIAS: &str = "backup";
-const TEST_TOPIC: &str = "test-topic-1";
+use connect_mirror::config::{SOURCE_CLUSTER_ALIAS_CONFIG, TARGET_CLUSTER_ALIAS_CONFIG};
+use connect_mirror::mirror_maker::MirrorMaker;
+use connect_mirror::mirror_maker_config::MirrorMakerConfig;
+use connect_mirror_client::SourceAndTarget;
 
-/// Shared topic storage for mock cluster (simulates Kafka)
-type TopicStorage = Arc<Mutex<HashMap<String, Vec<MockConsumerRecord>>>>;
-/// Producer record storage type
-type ProducerStorage = Arc<Mutex<Vec<kafka_clients_mock::producer::MockRecord>>>;
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
-/// Mock cluster representing a Kafka cluster
-struct MockCluster {
-    alias: String,
-    producer: MockProducer,
-    consumer: MockConsumer,
-    admin: MockAdminClient,
-    topic_storage: TopicStorage,
+/// Creates basic MM2 configuration for bidirectional replication between two clusters.
+///
+/// Corresponds to Java: MirrorConnectorsIntegrationBaseTest.basicMM2Config()
+fn create_basic_mm2_config() -> HashMap<String, String> {
+    let mut props = HashMap::new();
+
+    // Cluster definitions
+    props.insert("clusters".to_string(), "primary, backup".to_string());
+
+    // Bootstrap servers for each cluster (mock values)
+    props.insert(
+        "primary.bootstrap.servers".to_string(),
+        "primary:9092".to_string(),
+    );
+    props.insert(
+        "backup.bootstrap.servers".to_string(),
+        "backup:9092".to_string(),
+    );
+
+    // Enable bidirectional replication
+    props.insert("primary->backup.enabled".to_string(), "true".to_string());
+    props.insert("backup->primary.enabled".to_string(), "true".to_string());
+
+    // Topic filter configuration
+    props.insert(
+        "primary->backup.topics".to_string(),
+        "test-topic-.*".to_string(),
+    );
+    props.insert(
+        "backup->primary.topics".to_string(),
+        "test-topic-.*".to_string(),
+    );
+
+    // Heartbeat configuration
+    props.insert("emit.heartbeats.enabled".to_string(), "true".to_string());
+    props.insert(
+        "emit.heartbeats.interval.seconds".to_string(),
+        "1".to_string(),
+    );
+
+    // Checkpoint configuration
+    props.insert("emit.checkpoints.enabled".to_string(), "true".to_string());
+    props.insert(
+        "emit.checkpoints.interval.seconds".to_string(),
+        "1".to_string(),
+    );
+
+    // Offset sync configuration
+    props.insert("sync.group.offsets.enabled".to_string(), "true".to_string());
+    props.insert(
+        "sync.group.offsets.interval.seconds".to_string(),
+        "1".to_string(),
+    );
+
+    // Replication factor (for topic creation)
+    props.insert("replication.factor".to_string(), "1".to_string());
+    props.insert(
+        "checkpoints.topic.replication.factor".to_string(),
+        "1".to_string(),
+    );
+    props.insert(
+        "heartbeats.topic.replication.factor".to_string(),
+        "1".to_string(),
+    );
+    props.insert(
+        "offset-syncs.topic.replication.factor".to_string(),
+        "1".to_string(),
+    );
+
+    props
 }
 
-impl MockCluster {
-    fn new(alias: &str) -> Self {
-        let topic_storage: TopicStorage = Arc::new(Mutex::new(HashMap::new()));
-        let producer_storage: ProducerStorage = Arc::new(Mutex::new(Vec::new()));
-        MockCluster {
-            alias: alias.to_string(),
-            producer: MockProducer::new_with_storage(producer_storage),
-            consumer: MockConsumer::new_with_storage(topic_storage.clone()),
-            admin: MockAdminClient::new(),
-            topic_storage,
-        }
+/// Creates one-way replication configuration (primary -> backup only).
+fn create_one_way_config() -> HashMap<String, String> {
+    let mut props = create_basic_mm2_config();
+
+    // Disable backup->primary replication
+    props.insert("backup->primary.enabled".to_string(), "false".to_string());
+
+    props
+}
+
+/// Creates configuration for specific target cluster.
+fn create_config_for_cluster(cluster: &str) -> HashMap<String, String> {
+    let mut props = create_basic_mm2_config();
+
+    // Set target cluster specific settings
+    props.insert(format!("{}.replication.factor", cluster), "3".to_string());
+
+    props
+}
+
+// ============================================================================
+// Tests - MirrorMakerConfig Validation
+// ============================================================================
+
+/// Tests basic MirrorMakerConfig creation with bidirectional replication.
+///
+/// Validates that:
+/// - Clusters are correctly parsed
+/// - Cluster pairs are created for enabled flows
+/// - Connector configs contain correct source/target aliases
+///
+/// Corresponds to Java: MirrorConnectorsIntegrationBaseTest.testReplication() setup
+#[test]
+fn test_mirror_maker_config_basic() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Validate clusters
+    let clusters = config.clusters();
+    assert_eq!(clusters.len(), 2);
+    assert!(clusters.contains("primary"));
+    assert!(clusters.contains("backup"));
+
+    // Validate cluster pairs (should have 2 for bidirectional)
+    let pairs = config.cluster_pairs();
+    assert_eq!(pairs.len(), 2);
+
+    // Check both directions
+    assert!(pairs.contains(&SourceAndTarget::new("primary", "backup")));
+    assert!(pairs.contains(&SourceAndTarget::new("backup", "primary")));
+}
+
+/// Tests MirrorMakerConfig with one-way replication.
+#[test]
+fn test_mirror_maker_config_one_way() {
+    let props = create_one_way_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Validate clusters
+    let clusters = config.clusters();
+    assert_eq!(clusters.len(), 2);
+
+    // Validate cluster pairs (should have 1 for one-way with heartbeats)
+    // primary->backup (enabled), backup->primary (heartbeats)
+    let pairs = config.cluster_pairs();
+    assert!(pairs.len() >= 1);
+
+    // primary->backup should be present
+    assert!(pairs.contains(&SourceAndTarget::new("primary", "backup")));
+}
+
+/// Tests MirrorMakerConfig cluster pair behavior with heartbeats disabled.
+#[test]
+fn test_mirror_maker_config_heartbeats_disabled() {
+    let mut props = create_basic_mm2_config();
+
+    // Disable heartbeats globally
+    props.insert("emit.heartbeats.enabled".to_string(), "false".to_string());
+
+    // Disable one direction
+    props.insert("backup->primary.enabled".to_string(), "false".to_string());
+
+    let config = MirrorMakerConfig::new(props);
+
+    // Should only have primary->backup (enabled)
+    let pairs = config.cluster_pairs();
+    assert_eq!(pairs.len(), 1);
+    assert!(pairs.contains(&SourceAndTarget::new("primary", "backup")));
+}
+
+/// Tests MirrorMakerConfig source config extraction.
+#[test]
+fn test_mirror_maker_config_source_config() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let source_config = config.source_config(&source_and_target);
+
+    // Validate source/target aliases
+    assert_eq!(source_config.source_cluster_alias(), "primary");
+    assert_eq!(source_config.target_cluster_alias(), "backup");
+}
+
+/// Tests MirrorMakerConfig checkpoint config extraction.
+#[test]
+fn test_mirror_maker_config_checkpoint_config() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let checkpoint_config = config.checkpoint_config(&source_and_target);
+
+    // Validate source/target aliases
+    assert_eq!(checkpoint_config.source_cluster_alias(), "primary");
+    assert_eq!(checkpoint_config.target_cluster_alias(), "backup");
+}
+
+/// Tests MirrorMakerConfig heartbeat config extraction.
+#[test]
+fn test_mirror_maker_config_heartbeat_config() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let heartbeat_config = config.heartbeat_config(&source_and_target);
+
+    // Validate source/target aliases
+    assert_eq!(heartbeat_config.source_cluster_alias(), "primary");
+    assert_eq!(heartbeat_config.target_cluster_alias(), "backup");
+}
+
+/// Tests MirrorMakerConfig worker config extraction.
+#[test]
+fn test_mirror_maker_config_worker_config() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let worker_config = config.worker_config(&source_and_target);
+
+    // Validate key worker config keys
+    assert!(worker_config.contains_key("client.id"));
+    assert!(worker_config.contains_key("group.id"));
+    assert!(worker_config.contains_key("offset.storage.topic"));
+    assert!(worker_config.contains_key("status.storage.topic"));
+    assert!(worker_config.contains_key("config.storage.topic"));
+
+    // Validate group.id format: source-mm2
+    assert_eq!(
+        worker_config.get("group.id"),
+        Some(&"primary-mm2".to_string())
+    );
+
+    // Validate internal topics format: mm2-xxx.source.internal
+    assert_eq!(
+        worker_config.get("offset.storage.topic"),
+        Some(&"mm2-offsets.primary.internal".to_string())
+    );
+}
+
+/// Tests MirrorMakerConfig connector base config extraction.
+#[test]
+fn test_mirror_maker_config_connector_base_config() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let connector_config = config.connector_base_config(
+        &source_and_target,
+        "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+    );
+
+    // Validate connector class
+    assert_eq!(
+        connector_config.get("connector.class"),
+        Some(&"org.apache.kafka.connect.mirror.MirrorSourceConnector".to_string())
+    );
+
+    // Validate source/target aliases
+    assert_eq!(
+        connector_config.get(SOURCE_CLUSTER_ALIAS_CONFIG),
+        Some(&"primary".to_string())
+    );
+    assert_eq!(
+        connector_config.get(TARGET_CLUSTER_ALIAS_CONFIG),
+        Some(&"backup".to_string())
+    );
+
+    // Validate name (simple class name)
+    assert_eq!(
+        connector_config.get("name"),
+        Some(&"MirrorSourceConnector".to_string())
+    );
+}
+
+// ============================================================================
+// Tests - MirrorMaker Lifecycle
+// ============================================================================
+
+/// Tests MirrorMaker creation and basic properties.
+///
+/// Corresponds to Java: MirrorMaker instantiation
+#[test]
+fn test_mirror_maker_new() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mm = MirrorMaker::new(config, None);
+
+    // Should have 2 herders (primary->backup, backup->primary)
+    assert_eq!(mm.herder_count(), 2);
+
+    // Validate clusters
+    assert!(mm.clusters().contains("primary"));
+    assert!(mm.clusters().contains("backup"));
+
+    // Should not be shutdown initially
+    assert!(!mm.is_shutdown());
+}
+
+/// Tests MirrorMaker creation with specific target cluster.
+#[test]
+fn test_mirror_maker_new_with_specific_cluster() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Create MirrorMaker targeting only "backup" cluster
+    let mm = MirrorMaker::new(config, Some(vec!["backup".to_string()]));
+
+    // Should have herders targeting backup only
+    // primary->backup targets backup, so it should be included
+    assert!(mm.herder_count() >= 1);
+
+    // Validate clusters - should only contain "backup"
+    assert!(mm.clusters().contains("backup"));
+    assert!(!mm.clusters().contains("primary"));
+}
+
+/// Tests MirrorMaker herder pairs extraction.
+#[test]
+fn test_mirror_maker_herder_pairs() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mm = MirrorMaker::new(config, None);
+
+    let pairs = mm.herder_pairs();
+    assert_eq!(pairs.len(), 2);
+
+    // Both directions should be present
+    assert!(pairs.contains(&SourceAndTarget::new("primary", "backup")));
+    assert!(pairs.contains(&SourceAndTarget::new("backup", "primary")));
+}
+
+/// Tests MirrorMaker start lifecycle.
+///
+/// Corresponds to Java: MirrorMaker.start()
+#[test]
+fn test_mirror_maker_start() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mut mm = MirrorMaker::new(config, None);
+
+    // Start MirrorMaker
+    mm.start();
+
+    // After start, should not be shutdown
+    assert!(!mm.is_shutdown());
+
+    // After start, herder_count should still be 2
+    assert_eq!(mm.herder_count(), 2);
+}
+
+/// Tests MirrorMaker stop lifecycle.
+///
+/// Corresponds to Java: MirrorMaker.stop()
+#[test]
+fn test_mirror_maker_stop() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mut mm = MirrorMaker::new(config, None);
+
+    // Start then stop
+    mm.start();
+    mm.stop();
+
+    // After stop, should be shutdown
+    assert!(mm.is_shutdown());
+}
+
+/// Tests MirrorMaker complete lifecycle: create -> start -> stop.
+#[test]
+fn test_mirror_maker_lifecycle() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Create
+    let mut mm = MirrorMaker::new(config, None);
+    assert!(!mm.is_shutdown());
+
+    // Start
+    mm.start();
+    assert!(!mm.is_shutdown());
+
+    // Stop
+    mm.stop();
+    assert!(mm.is_shutdown());
+
+    // Multiple stops should not error (returns early)
+    mm.stop();
+    assert!(mm.is_shutdown());
+}
+
+/// Tests MirrorMaker await_stop with timeout.
+#[test]
+fn test_mirror_maker_await_stop() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mut mm = MirrorMaker::new(config, None);
+
+    mm.start();
+    mm.stop();
+
+    // Should complete quickly since herders are already stopped
+    let result = mm.await_stop(Duration::from_secs(5));
+    assert!(result);
+}
+
+/// Tests MirrorMaker connector status retrieval.
+#[test]
+fn test_mirror_maker_connector_status() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mm = MirrorMaker::new(config, None);
+
+    // Get connector status for a valid pair
+    let pair = SourceAndTarget::new("primary", "backup");
+    let status = mm.connector_status(&pair, "MirrorSourceConnector");
+
+    // Status should be available (even if MockHerder returns Unassigned)
+    assert!(status.is_some());
+}
+
+/// Tests MirrorMaker connector status for invalid pair.
+#[test]
+fn test_mirror_maker_connector_status_invalid_pair() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mm = MirrorMaker::new(config, None);
+
+    // Invalid pair (not in cluster pairs)
+    let pair = SourceAndTarget::new("unknown", "cluster");
+    let status = mm.connector_status(&pair, "MirrorSourceConnector");
+
+    // Should return None for invalid pair
+    assert!(status.is_none());
+}
+
+// ============================================================================
+// Tests - Configuration Properties
+// ============================================================================
+
+/// Tests that replication.policy.class is correctly inherited.
+#[test]
+fn test_replication_policy_config() {
+    let mut props = create_basic_mm2_config();
+    props.insert(
+        "replication.policy.class".to_string(),
+        "org.apache.kafka.connect.mirror.CustomReplicationPolicy".to_string(),
+    );
+
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let connector_config = config.connector_base_config(
+        &source_and_target,
+        "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+    );
+
+    // Replication policy should be present in connector config
+    assert!(connector_config.contains_key("replication.policy.class"));
+}
+
+/// Tests that topic filter configuration is correctly passed.
+#[test]
+fn test_topic_filter_config() {
+    let mut props = create_basic_mm2_config();
+    props.insert(
+        "primary->backup.topic.filter.class".to_string(),
+        "org.apache.kafka.connect.mirror.CustomTopicFilter".to_string(),
+    );
+
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let source_config = config.source_config(&source_and_target);
+
+    // Topic filter should be configurable
+    // Note: actual validation depends on MirrorSourceConfig internals
+    assert_eq!(source_config.source_cluster_alias(), "primary");
+}
+
+/// Tests offset syncs topic location configuration.
+#[test]
+fn test_offset_syncs_location_config() {
+    let mut props = create_basic_mm2_config();
+    props.insert(
+        "primary->backup.offset-syncs.topic.location".to_string(),
+        "target".to_string(),
+    );
+
+    let config = MirrorMakerConfig::new(props);
+
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let connector_config = config.connector_base_config(
+        &source_and_target,
+        "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+    );
+
+    // Offset syncs location should be present
+    assert!(connector_config.contains_key("offset-syncs.topic.location"));
+    assert_eq!(
+        connector_config.get("offset-syncs.topic.location"),
+        Some(&"target".to_string())
+    );
+}
+
+/// Tests that config providers are correctly extracted.
+#[test]
+fn test_config_providers() {
+    let mut props = create_basic_mm2_config();
+    props.insert("config.providers".to_string(), "file, env".to_string());
+    props.insert(
+        "config.providers.file.class".to_string(),
+        "FileConfigProvider".to_string(),
+    );
+
+    let config = MirrorMakerConfig::new(props);
+
+    let providers = config.config_providers();
+    assert_eq!(providers.len(), 2);
+    assert!(providers.contains(&"file".to_string()));
+    assert!(providers.contains(&"env".to_string()));
+}
+
+// ============================================================================
+// Tests - Multi-Cluster Configuration
+// ============================================================================
+
+/// Tests MirrorMakerConfig with three clusters.
+#[test]
+fn test_three_clusters_config() {
+    let mut props = HashMap::new();
+
+    // Three clusters
+    props.insert("clusters".to_string(), "A, B, C".to_string());
+    props.insert("A.bootstrap.servers".to_string(), "a:9092".to_string());
+    props.insert("B.bootstrap.servers".to_string(), "b:9092".to_string());
+    props.insert("C.bootstrap.servers".to_string(), "c:9092".to_string());
+
+    // Enable specific flows
+    props.insert("A->B.enabled".to_string(), "true".to_string());
+    props.insert("B->C.enabled".to_string(), "true".to_string());
+    props.insert("A->C.enabled".to_string(), "true".to_string());
+
+    // Disable heartbeats to only get enabled pairs
+    props.insert("emit.heartbeats.enabled".to_string(), "false".to_string());
+
+    let config = MirrorMakerConfig::new(props);
+
+    // Validate clusters
+    let clusters = config.clusters();
+    assert_eq!(clusters.len(), 3);
+    assert!(clusters.contains("A"));
+    assert!(clusters.contains("B"));
+    assert!(clusters.contains("C"));
+
+    // Validate cluster pairs
+    let pairs = config.cluster_pairs();
+    assert_eq!(pairs.len(), 3);
+
+    assert!(pairs.contains(&SourceAndTarget::new("A", "B")));
+    assert!(pairs.contains(&SourceAndTarget::new("B", "C")));
+    assert!(pairs.contains(&SourceAndTarget::new("A", "C")));
+}
+
+/// Tests MirrorMaker with three clusters targeting specific cluster.
+#[test]
+fn test_three_clusters_targeting_specific() {
+    let mut props = HashMap::new();
+
+    props.insert("clusters".to_string(), "A, B, C".to_string());
+    props.insert("A.bootstrap.servers".to_string(), "a:9092".to_string());
+    props.insert("B.bootstrap.servers".to_string(), "b:9092".to_string());
+    props.insert("C.bootstrap.servers".to_string(), "c:9092".to_string());
+
+    props.insert("A->B.enabled".to_string(), "true".to_string());
+    props.insert("A->C.enabled".to_string(), "true".to_string());
+    props.insert("B->C.enabled".to_string(), "true".to_string());
+
+    props.insert("emit.heartbeats.enabled".to_string(), "false".to_string());
+
+    let config = MirrorMakerConfig::new(props);
+
+    // Target cluster C only
+    let mm = MirrorMaker::new(config, Some(vec!["C".to_string()]));
+
+    // Should have herders targeting C: A->C, B->C
+    assert_eq!(mm.herder_count(), 2);
+
+    // Validate clusters - should only contain C
+    assert!(mm.clusters().contains("C"));
+    assert!(!mm.clusters().contains("A"));
+    assert!(!mm.clusters().contains("B"));
+}
+
+// ============================================================================
+// Tests - Error Handling
+// ============================================================================
+
+/// Tests that MirrorMaker creation fails with no replication flows.
+#[test]
+#[should_panic(expected = "No source->target replication flows")]
+fn test_mirror_maker_no_replication_flows() {
+    let mut props = HashMap::new();
+    props.insert("clusters".to_string(), "A, B".to_string());
+    props.insert("A.bootstrap.servers".to_string(), "a:9092".to_string());
+    props.insert("B.bootstrap.servers".to_string(), "b:9092".to_string());
+    // No enabled flows and no heartbeats
+    props.insert("emit.heartbeats.enabled".to_string(), "false".to_string());
+
+    let config = MirrorMakerConfig::new(props);
+
+    // Should panic: no replication flows targeting unknown cluster
+    let _mm = MirrorMaker::new(config, Some(vec!["unknown".to_string()]));
+}
+
+/// Tests that MirrorMaker double start is prevented.
+#[test]
+#[should_panic(expected = "MirrorMaker instance already started")]
+fn test_mirror_maker_double_start() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    let mut mm = MirrorMaker::new(config, None);
+
+    mm.start();
+    mm.start(); // Should panic
+}
+
+/// Tests MirrorMakerConfig with empty clusters.
+#[test]
+fn test_mirror_maker_config_empty_clusters() {
+    let props = HashMap::new();
+    let config = MirrorMakerConfig::new(props);
+
+    // Clusters should be empty
+    let clusters = config.clusters();
+    assert!(clusters.is_empty());
+
+    // Cluster pairs should be empty
+    let pairs = config.cluster_pairs();
+    assert!(pairs.is_empty());
+}
+
+// ============================================================================
+// Tests - Internal REST Configuration
+// ============================================================================
+
+/// Tests internal REST server configuration default.
+#[test]
+fn test_internal_rest_default() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Internal REST should be disabled by default
+    assert!(!config.enable_internal_rest());
+}
+
+/// Tests internal REST server configuration enabled.
+#[test]
+fn test_internal_rest_enabled() {
+    let mut props = create_basic_mm2_config();
+    props.insert(
+        "dedicated.mode.enable.internal.rest".to_string(),
+        "true".to_string(),
+    );
+
+    let config = MirrorMakerConfig::new(props);
+
+    assert!(config.enable_internal_rest());
+}
+
+// ============================================================================
+// Tests - Complete Integration Workflow
+// ============================================================================
+
+/// Tests complete MM2 integration workflow.
+///
+/// This test validates the entire flow from configuration to shutdown:
+/// 1. Create MM2 configuration
+/// 2. Create MirrorMaker
+/// 3. Validate cluster pairs and configurations
+/// 4. Start MirrorMaker
+/// 5. Validate herder states
+/// 6. Stop MirrorMaker
+/// 7. Validate shutdown
+///
+/// Corresponds to Java: MirrorConnectorsIntegrationBaseTest integration flow
+#[test]
+fn test_complete_mm2_integration_workflow() {
+    // Step 1: Create MM2 configuration
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Validate configuration
+    assert_eq!(config.clusters().len(), 2);
+    assert_eq!(config.cluster_pairs().len(), 2);
+
+    // Get herder pairs before creating MirrorMaker
+    let pairs = config.cluster_pairs();
+
+    // Step 2: Create MirrorMaker
+    let props2 = create_basic_mm2_config();
+    let config2 = MirrorMakerConfig::new(props2);
+    let mut mm = MirrorMaker::new(config2, None);
+
+    // Validate MirrorMaker properties
+    assert_eq!(mm.herder_count(), 2);
+    assert!(!mm.is_shutdown());
+
+    // Step 3: Validate connector configurations for each pair
+    for pair in pairs {
+        let source_config = config.source_config(&pair);
+        assert_eq!(source_config.source_cluster_alias(), pair.source());
+        assert_eq!(source_config.target_cluster_alias(), pair.target());
+
+        let checkpoint_config = config.checkpoint_config(&pair);
+        assert_eq!(checkpoint_config.source_cluster_alias(), pair.source());
+        assert_eq!(checkpoint_config.target_cluster_alias(), pair.target());
+
+        let heartbeat_config = config.heartbeat_config(&pair);
+        assert_eq!(heartbeat_config.source_cluster_alias(), pair.source());
+        assert_eq!(heartbeat_config.target_cluster_alias(), pair.target());
+
+        // Validate connector status for each pair
+        let status = mm.connector_status(&pair, "MirrorSourceConnector");
+        assert!(status.is_some());
     }
 
-    /// Get all records produced by the producer (producer storage)
-    fn get_producer_records(&self) -> Vec<kafka_clients_mock::producer::MockRecord> {
-        self.producer.get_records()
-    }
+    // Step 4: Start MirrorMaker
+    mm.start();
 
-    /// Get records for a topic from the consumer storage
-    fn get_consumer_records(&self, topic: &str) -> Vec<MockConsumerRecord> {
-        self.consumer.get_records_for_topic(topic)
-    }
+    // Validate started state
+    assert!(!mm.is_shutdown());
 
-    /// Create a test topic
-    async fn create_topic(&self, topic_name: &str, num_partitions: i32) -> Result<(), String> {
-        let new_topic = NewTopic {
-            name: topic_name.to_string(),
-            num_partitions,
-            replication_factor: 1,
-            configs: HashMap::new(),
-        };
+    // Step 5: Stop MirrorMaker
+    mm.stop();
 
-        let result = self.admin.create_topics(vec![new_topic]).await;
-        match result {
-            Ok(results) => {
-                if let Some(error) = results.get(topic_name) {
-                    if error != "Success" {
-                        return Err(format!("Failed to create topic: {}", error));
-                    }
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
+    // Validate shutdown state
+    assert!(mm.is_shutdown());
 
-    /// Produce records to a topic
-    async fn produce_records(&self, topic: &str, num_records: i32) -> Result<(), String> {
-        for i in 0..num_records {
-            let record = ProducerRecord {
-                topic: topic.to_string(),
-                partition: Some(i % NUM_PARTITIONS),
-                key: Some(format!("key-{}", i).into_bytes()),
-                value: Some(format!("value-{}", i).into_bytes()),
-                timestamp: None,
-            };
-
-            // Use a simple blocking approach for test
-            let _ = self.producer.send(record).await;
-        }
-        Ok(())
-    }
-
-    /// Get all records from a topic
-    fn get_records(&self, topic: &str) -> Vec<MockConsumerRecord> {
-        self.consumer.get_records_for_topic(topic)
-    }
-
-    /// Assign consumer to partitions
-    async fn assign_consumer(&self, topic: &str, partitions: Vec<i32>) -> Result<(), String> {
-        let topic_partitions: Vec<TopicPartition> = partitions
-            .into_iter()
-            .map(|p| TopicPartition {
-                topic: topic.to_string(),
-                partition: p,
-            })
-            .collect();
-
-        self.consumer.assign(topic_partitions).await
-    }
-
-    /// Poll records from consumer
-    async fn poll_records(&self, timeout: Duration) -> Result<Vec<MockConsumerRecord>, String> {
-        let records = self.consumer.poll(timeout).await?;
-        Ok(records.into_iter().map(|r| MockConsumerRecord {
-            topic: r.topic,
-            partition: r.partition,
-            offset: r.offset,
-            key: r.key,
-            value: r.value,
-            timestamp: Some(r.timestamp),
-        }).collect())
-    }
+    // Step 6: Await stop completion
+    let result = mm.await_stop(Duration::from_secs(5));
+    assert!(result);
 }
 
-/// Setup test clusters with initial data
-async fn setup_test_clusters() -> Result<(MockCluster, MockCluster), String> {
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
+/// Tests one-way replication workflow.
+#[test]
+fn test_one_way_replication_workflow() {
+    // Create one-way config
+    let props = create_one_way_config();
+    let config = MirrorMakerConfig::new(props);
 
-    // Create test topic in primary cluster
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await?;
+    // Create MirrorMaker
+    let props2 = create_one_way_config();
+    let config2 = MirrorMakerConfig::new(props2);
+    let mut mm = MirrorMaker::new(config2, None);
 
-    // Produce initial records
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await?;
+    // Should have at least one herder (primary->backup)
+    assert!(mm.herder_count() >= 1);
 
-    Ok((primary, backup))
+    // Validate primary->backup is present
+    let pairs = mm.herder_pairs();
+    assert!(pairs.contains(&SourceAndTarget::new("primary", "backup")));
+
+    // Lifecycle
+    mm.start();
+    assert!(!mm.is_shutdown());
+
+    mm.stop();
+    assert!(mm.is_shutdown());
 }
 
-/// ============================================================================
-/// Test 9.1.1: Basic Replication Tests
-/// ============================================================================
+/// Tests MirrorMaker with configuration overrides.
+#[test]
+fn test_configuration_overrides() {
+    let mut props = create_basic_mm2_config();
 
-#[tokio::test]
-async fn test_basic_single_topic_replication() {
-    println!("Running test_basic_single_topic_replication...");
+    // Add cluster-specific overrides
+    props.insert(
+        "primary->backup.replication.factor".to_string(),
+        "2".to_string(),
+    );
+    props.insert(
+        "primary->backup.offset.lag.max".to_string(),
+        "100".to_string(),
+    );
 
-    // Setup clusters
-    let (primary, backup) = setup_test_clusters().await.unwrap();
+    let config = MirrorMakerConfig::new(props);
 
-    // Simulate MM2 replication: copy records from primary to backup
-    let primary_records = primary.get_producer_records();
-    println!("Primary cluster has {} records", primary_records.len());
+    let source_and_target = SourceAndTarget::new("primary", "backup");
+    let connector_config = config.connector_base_config(
+        &source_and_target,
+        "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+    );
 
-    // In a real MM2 setup, MirrorSourceConnector would read from primary
-    // and MirrorCheckpointConnector would write to backup
-    // For this test, we simulate the replication by adding records to backup consumer
-    let backup_records = primary_records.len();
-
-    // Verify replication
-    assert_eq!(backup_records, NUM_RECORDS_PRODUCED as usize);
-    println!("✓ Basic single topic replication test passed");
+    // Validate overrides are applied
+    assert_eq!(
+        connector_config.get("replication.factor"),
+        Some(&"2".to_string())
+    );
+    assert_eq!(
+        connector_config.get("offset.lag.max"),
+        Some(&"100".to_string())
+    );
 }
 
-#[tokio::test]
-async fn test_basic_multiple_topic_replication() {
-    println!("Running test_basic_multiple_topic_replication...");
+// ============================================================================
+// Tests - ShutdownHook
+// ============================================================================
 
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
+/// Tests ShutdownHook execution.
+#[test]
+fn test_shutdown_hook() {
+    use connect_mirror::mirror_maker::ShutdownHook;
+    use std::sync::{Arc, RwLock};
 
-    // Create multiple topics
-    let topics = vec!["topic-1", "topic-2", "topic-3"];
-    for topic in &topics {
-        primary.create_topic(topic, NUM_PARTITIONS).await.unwrap();
-        primary.produce_records(topic, NUM_RECORDS_PRODUCED).await.unwrap();
-    }
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
 
-    // Simulate replication for all topics - use producer records
-    let total_records = primary.get_producer_records().len();
-    println!("Total records produced: {}", total_records);
+    let mut mm = MirrorMaker::new(config, None);
+    mm.start();
 
-    // Verify all topics were replicated
-    let expected_total = (topics.len() * NUM_RECORDS_PRODUCED as usize) as usize;
-    assert_eq!(total_records, expected_total);
-    println!("✓ Basic multiple topic replication test passed");
+    // Create shutdown hook
+    let mm_arc = Arc::new(RwLock::new(mm));
+    let hook = ShutdownHook::new(mm_arc.clone());
+
+    // Execute hook
+    hook.run();
+
+    // Validate shutdown
+    assert!(mm_arc.read().unwrap().is_shutdown());
 }
 
-#[tokio::test]
-async fn test_topic_config_replication() {
-    println!("Running test_topic_config_replication...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Create topic with specific configuration
-    let mut configs = HashMap::new();
-    configs.insert("retention.ms".to_string(), "604800000".to_string());
-    configs.insert("cleanup.policy".to_string(), "delete".to_string());
-
-    let new_topic = NewTopic {
-        name: TEST_TOPIC.to_string(),
-        num_partitions: NUM_PARTITIONS,
-        replication_factor: 1,
-        configs: configs.clone(),
-    };
-
-    primary.admin.create_topics(vec![new_topic]).await.unwrap();
-
-    // Verify topic was created with correct config
-    let topics = primary.admin.get_topics();
-    assert!(topics.contains_key(TEST_TOPIC));
-
-    if let Some(topic_info) = topics.get(TEST_TOPIC) {
-        assert_eq!(topic_info.num_partitions, NUM_PARTITIONS);
-        assert_eq!(topic_info.replication_factor, 1);
-        // Verify config was preserved
-        assert_eq!(topic_info.config.get("retention.ms"), Some(&"604800000".to_string()));
-    }
-
-    println!("✓ Topic config replication test passed");
-}
-
-/// ============================================================================
-/// Test 9.1.2: Offset Synchronization Tests
-/// ============================================================================
-
-#[tokio::test]
-async fn test_offset_recording() {
-    println!("Running test_offset_recording...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup topic and produce records
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Assign consumer and consume some records
-    primary.assign_consumer(TEST_TOPIC, vec![0, 1]).await.unwrap();
-
-    // Poll records to advance consumer position
-    let records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    println!("Consumed {} records", records.len());
-
-    // Record current offset (simulating MM2 offset sync)
-    let offset = primary.consumer.get_position(TEST_TOPIC, 0);
-    println!("Recorded offset for partition 0: {}", offset);
-
-    // Verify offset was recorded
-    assert!(offset >= 0);
-    println!("✓ Offset recording test passed");
-}
-
-#[tokio::test]
-async fn test_offset_recovery() {
-    println!("Running test_offset_recovery...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-
-    // Setup topic and produce records
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // First consumer: consume and record offset
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let saved_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Simulate consumer restart by creating new consumer assignment
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-
-    // Seek to saved offset (simulating offset recovery)
-    primary.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        saved_offset
-    ).await.unwrap();
-
-    // Verify recovery
-    let recovered_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-    assert_eq!(recovered_offset, saved_offset);
-    println!("✓ Offset recovery test passed");
-}
-
-#[tokio::test]
-async fn test_offset_consistency() {
-    println!("Running test_offset_consistency...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup topic
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Consume from primary
-    primary.assign_consumer(TEST_TOPIC, vec![0, 1]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let primary_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Simulate offset sync to backup
-    backup.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        primary_offset
-    ).await.unwrap();
-
-    let backup_offset = backup.consumer.get_position(TEST_TOPIC, 0);
-
-    // Verify offset consistency across clusters
-    assert_eq!(primary_offset, backup_offset);
-    println!("✓ Offset consistency test passed");
-}
-
-/// ============================================================================
-/// Test 9.1.3: Checkpoint Tests
-/// ============================================================================
-
-#[tokio::test]
-async fn test_checkpoint_recording() {
-    println!("Running test_checkpoint_recording...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Consume and record checkpoint
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-
-    // Simulate checkpoint recording
-    let checkpoint = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Verify checkpoint was recorded
-    assert!(checkpoint >= 0);
-    println!("Checkpoint recorded at offset: {}", checkpoint);
-    println!("✓ Checkpoint recording test passed");
-}
-
-#[tokio::test]
-async fn test_checkpoint_recovery() {
-    println!("Running test_checkpoint_recovery...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Record checkpoint
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let checkpoint = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Simulate failover: reassign and seek to checkpoint
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    primary.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        checkpoint
-    ).await.unwrap();
-
-    let recovered_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-    assert_eq!(recovered_offset, checkpoint);
-    println!("✓ Checkpoint recovery test passed");
-}
-
-#[tokio::test]
-async fn test_checkpoint_consistency() {
-    println!("Running test_checkpoint_consistency...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Record checkpoint on primary
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let primary_checkpoint = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Sync checkpoint to backup
-    backup.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        primary_checkpoint
-    ).await.unwrap();
-
-    let backup_checkpoint = backup.consumer.get_position(TEST_TOPIC, 0);
-
-    // Verify checkpoint consistency
-    assert_eq!(primary_checkpoint, backup_checkpoint);
-    println!("✓ Checkpoint consistency test passed");
-}
-
-/// ============================================================================
-/// Test 9.1.4: Failover Tests
-/// ============================================================================
-
-#[tokio::test]
-async fn test_leader_failover() {
-    println!("Running test_leader_failover...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup replication
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Simulate leader failover: switch to backup - use producer records
-    let records = primary.get_producer_records();
-    assert_eq!(records.len(), NUM_RECORDS_PRODUCED as usize);
-
-    // Verify data is available after failover
-    println!("Data available after leader failover: {} records", records.len());
-    assert!(records.len() > 0);
-    println!("✓ Leader failover test passed");
-}
-
-#[tokio::test]
-async fn test_worker_failover() {
-    println!("Running test_worker_failover...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Worker 1: consume and record position
-    primary.assign_consumer(TEST_TOPIC, vec![0, 1]).await.unwrap();
-    let _records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let worker1_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Simulate worker failover: worker 2 takes over
-    primary.assign_consumer(TEST_TOPIC, vec![0, 1]).await.unwrap();
-    primary.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        worker1_offset
-    ).await.unwrap();
-
-    let worker2_offset = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Verify worker 2 recovered from worker 1's position
-    assert_eq!(worker1_offset, worker2_offset);
-    println!("✓ Worker failover test passed");
-}
-
-#[tokio::test]
-async fn test_no_data_loss_during_failover() {
-    println!("Running test_no_data_loss_during_failover...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup and produce data
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    let original_count = primary.get_producer_records().len();
-
-    // Simulate failover and recovery
-    sleep(Duration::from_millis(100)).await;
-
-    // Verify no data loss
-    let recovered_count = primary.get_producer_records().len();
-    assert_eq!(original_count, recovered_count);
-    assert_eq!(original_count, NUM_RECORDS_PRODUCED as usize);
-
-    println!("✓ No data loss during failover test passed");
-}
-
-/// ============================================================================
-/// Test 9.1.5: Exactly-Once Tests
-/// ============================================================================
-
-#[tokio::test]
-async fn test_exactly_once_semantics() {
-    println!("Running test_exactly_once_semantics...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Consume with exactly-once semantics
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let records1 = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-
-    // Simulate retry (should not duplicate)
-    let records2 = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-
-    // Verify no duplicates
-    assert_eq!(records1.len(), records2.len());
-    println!("✓ Exactly-once semantics test passed");
-}
-
-#[tokio::test]
-async fn test_duplicate_data_handling() {
-    println!("Running test_duplicate_data_handling...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Consume records
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let records = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-
-    // Verify all records are unique by offset
-    let mut offsets = std::collections::HashSet::new();
-    for record in &records {
-        assert!(!offsets.contains(&record.offset), "Duplicate offset detected: {}", record.offset);
-        offsets.insert(record.offset);
-    }
-
-    println!("✓ Duplicate data handling test passed");
-}
-
-#[tokio::test]
-async fn test_failure_recovery_with_exactly_once() {
-    println!("Running test_failure_recovery_with_exactly_once...");
-
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-
-    // Setup
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-
-    // Consume and record checkpoint
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    let records1 = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-    let checkpoint = primary.consumer.get_position(TEST_TOPIC, 0);
-
-    // Simulate failure and recovery
-    primary.assign_consumer(TEST_TOPIC, vec![0]).await.unwrap();
-    primary.consumer.seek(
-        TopicPartition {
-            topic: TEST_TOPIC.to_string(),
-            partition: 0,
-        },
-        checkpoint
-    ).await.unwrap();
-
-    // Consume after recovery (should not duplicate)
-    let records2 = primary.poll_records(Duration::from_millis(100)).await.unwrap();
-
-    // Verify no duplicates after recovery
-    assert_eq!(records1.len(), records2.len());
-    println!("✓ Failure recovery with exactly-once test passed");
-}
-
-/// ============================================================================
-/// End-to-End Integration Test
-/// ============================================================================
-
-#[tokio::test]
-async fn test_mm2_end_to_end_replication() {
-    println!("Running MM2 end-to-end replication test...");
-
-    // Setup primary and backup clusters
-    let primary = MockCluster::new(PRIMARY_CLUSTER_ALIAS);
-    let backup = MockCluster::new(BACKUP_CLUSTER_ALIAS);
-
-    // Create topic in primary
-    primary.create_topic(TEST_TOPIC, NUM_PARTITIONS).await.unwrap();
-
-    // Produce records to primary
-    primary.produce_records(TEST_TOPIC, NUM_RECORDS_PRODUCED).await.unwrap();
-    println!("Produced {} records to primary cluster", NUM_RECORDS_PRODUCED);
-
-    // Simulate MM2 replication: MirrorSourceConnector reads from primary
-    let primary_records = primary.get_producer_records();
-    println!("Read {} records from primary cluster", primary_records.len());
-
-    // Simulate MirrorCheckpointConnector writing to backup
-    // In real MM2, this would be done by the connectors
-    let replicated_count = primary_records.len();
-
-    // Verify replication
-    assert_eq!(replicated_count, NUM_RECORDS_PRODUCED as usize);
-    println!("Replicated {} records to backup cluster", replicated_count);
-
-    // Verify data integrity
-    for (i, record) in primary_records.iter().enumerate() {
-        assert_eq!(record.topic, TEST_TOPIC);
-        println!("Record {}: topic={}, partition={:?}",
-                 i, record.topic, record.partition);
-    }
-
-    println!("✓ MM2 end-to-end replication test passed");
+// ============================================================================
+// Tests - Config Values Access
+// ============================================================================
+
+/// Tests MirrorMakerConfig get and originals accessors.
+#[test]
+fn test_config_accessors() {
+    let props = create_basic_mm2_config();
+    let config = MirrorMakerConfig::new(props);
+
+    // Test get accessor
+    assert_eq!(config.get("clusters"), Some(&"primary, backup".to_string()));
+
+    // Test originals accessor
+    let originals = config.originals();
+    assert!(originals.contains_key("clusters"));
+
+    // Test raw_properties accessor
+    let raw_props = config.raw_properties();
+    assert!(raw_props.contains_key("clusters"));
 }
